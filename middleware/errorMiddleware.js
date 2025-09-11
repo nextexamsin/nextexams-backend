@@ -1,0 +1,24 @@
+const notFound = (req, res, next) => {
+  const error = new Error(`Not Found - ${req.originalUrl}`);
+  res.status(404);
+  next(error);
+};
+
+// Handles all other errors in the application
+const errorHandler = (err, req, res, next) => {
+  let statusCode = res.statusCode === 200 ? 500 : res.statusCode;
+  let message = err.message;
+
+  // Specific check for JWT errors
+  if (err.name === 'JsonWebTokenError') {
+    statusCode = 401; // Unauthorized
+    message = 'Invalid token. Please log in again.';
+  }
+
+  res.status(statusCode).json({
+    message: message,
+    stack: process.env.NODE_ENV === 'production' ? null : err.stack,
+  });
+};
+
+module.exports = { notFound, errorHandler };

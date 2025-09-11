@@ -235,11 +235,11 @@ const googleAuthCallback = async (req, res) => {
         const appToken = generateToken(user);
 
         // Redirect back to your frontend with your app's token
-        res.redirect(`http://localhost:5173/auth/callback?token=${appToken}`);
+       res.redirect(`${process.env.CLIENT_URL}/auth/callback?token=${appToken}`);
 
     } catch (error) {
         console.error('Google Auth Error:', error);
-        res.redirect('http://localhost:5173/login?error=google-auth-failed');
+        res.redirect(`${process.env.CLIENT_URL}/login?error=google-auth-failed`);
     }
 };
 

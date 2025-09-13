@@ -18,6 +18,7 @@ if (process.env.GOOGLE_CLIENT_SECRET) {
   console.log("✅ GOOGLE_CLIENT_SECRET: [LOADED]");
 } else {
   console.log("❌ GOOGLE_CLIENT_SECRET is missing!");
+}
 
 // Uncaught exception handler
 process.on('uncaughtException', (err) => {

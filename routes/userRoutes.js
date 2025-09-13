@@ -82,6 +82,7 @@ router.get('/attempted-tests', protect, getAttemptedTests);
 router.get('/attempted-tests-summary', protect, getAttemptedSummaries);
 router.get('/profile/pass-history', protect, getPassHistory);
 router.get('/auth/google/callback', googleAuthCallback);
+router.post('/auth/google/callback', googleAuthCallback);
 
 
 

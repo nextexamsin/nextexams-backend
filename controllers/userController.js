@@ -201,11 +201,17 @@ const verifyOtpAndLogin = async (req, res) => {
 
 const googleAuthCallback = async (req, res) => {
     const { code } = req.body;   // ✅ take code from body
-  console.log("!!! [DEBUG] Received code:", code);
 
-   if (!code) {
-    return res.status(400).json({ message: "Missing authorization code" });
-  }
+    console.log("========== GOOGLE AUTH DEBUG ==========");
+    console.log(">> Code received:", code);
+    console.log(">> Using redirect_uri:", process.env.GOOGLE_OAUTH_REDIRECT_URI);
+    console.log(">> Client ID:", process.env.GOOGLE_CLIENT_ID);
+    console.log(">> Server URL:", process.env.CLIENT_URL);
+    console.log("=======================================");
+
+    if (!code) {
+        return res.status(400).json({ message: "Missing authorization code" });
+    }
 
     try {
         const oAuth2Client = new OAuth2Client(
@@ -213,8 +219,6 @@ const googleAuthCallback = async (req, res) => {
             process.env.GOOGLE_CLIENT_SECRET,
             process.env.GOOGLE_OAUTH_REDIRECT_URI
         );
-console.log(">> redirect_uri used:", process.env.GOOGLE_OAUTH_REDIRECT_URI);
-        
 
         // ✅ Explicitly include redirect_uri here
         const { tokens } = await oAuth2Client.getToken({
@@ -231,8 +235,9 @@ console.log(">> redirect_uri used:", process.env.GOOGLE_OAUTH_REDIRECT_URI);
 
         const payload = ticket.getPayload();
         const { email, name, picture } = payload;
-        const [firstName, ...lastNameParts] = name.split(' ');
-        const lastName = lastNameParts.join(' ');
+
+        const [firstName = "", ...lastNameParts] = (name || "").split(" ");
+        const lastName = lastNameParts.join(" ");
 
         let user = await User.findOne({ email });
 
@@ -260,9 +265,11 @@ console.log(">> redirect_uri used:", process.env.GOOGLE_OAUTH_REDIRECT_URI);
         });
 
     } catch (error) {
-        console.error('Google Auth Error:', error);
-        
-        res.status(500).json({ message: 'Google authentication failed.', error: error.message });
+        console.error("❌ Google Auth Error:", error?.response?.data || error.message);
+        res.status(500).json({
+            message: "Google authentication failed.",
+            error: error?.response?.data || error.message,
+        });
     }
 };
 

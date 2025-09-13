@@ -213,7 +213,7 @@ const googleAuthCallback = async (req, res) => {
             process.env.GOOGLE_CLIENT_SECRET,
             process.env.GOOGLE_OAUTH_REDIRECT_URI
         );
-
+console.log(">> redirect_uri used:", process.env.GOOGLE_OAUTH_REDIRECT_URI);
         
 
         // ✅ Explicitly include redirect_uri here

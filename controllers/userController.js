@@ -199,76 +199,69 @@ const verifyOtpAndLogin = async (req, res) => {
     }
 };
 
-
 const googleAuthCallback = async (req, res) => {
-  // accept either POST body or GET query for backward compatibility
-  const code = (req.body && req.body.code) || req.query.code;
+    const { code } = req.query;
 
-  console.log('!!! [DEBUG] Received code:', code);
-  console.log('!!! [DEBUG] Using Redirect URI:', process.env.GOOGLE_OAUTH_REDIRECT_URI);
+    try {
+        const oAuth2Client = new OAuth2Client(
+            process.env.GOOGLE_CLIENT_ID,
+            process.env.GOOGLE_CLIENT_SECRET,
+            process.env.GOOGLE_OAUTH_REDIRECT_URI
+        );
 
-  try {
-    const oAuth2Client = new OAuth2Client(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-      process.env.GOOGLE_OAUTH_REDIRECT_URI
-    );
+        console.log("!!! [DEBUG] Received code:", code);
+        console.log("!!! [DEBUG] Using Redirect URI:", process.env.GOOGLE_OAUTH_REDIRECT_URI);
 
-    // Pass redirect_uri explicitly — this must EXACTLY match the value in Google Console
-    const tokenResponse = await oAuth2Client.getToken({
-      code,
-      redirect_uri: process.env.GOOGLE_OAUTH_REDIRECT_URI,
-    });
+        // ✅ Explicitly include redirect_uri here
+        const { tokens } = await oAuth2Client.getToken({
+            code,
+            redirect_uri: process.env.GOOGLE_OAUTH_REDIRECT_URI,
+        });
 
-    // tokenResponse may contain tokens in different properties depending on library version
-    const tokens = tokenResponse.tokens || tokenResponse;
-    console.log('!!! [DEBUG] Token response keys:', Object.keys(tokens || {}));
+        oAuth2Client.setCredentials(tokens);
 
-    oAuth2Client.setCredentials(tokens);
+        const ticket = await oAuth2Client.verifyIdToken({
+            idToken: tokens.id_token,
+            audience: process.env.GOOGLE_CLIENT_ID,
+        });
 
-    const ticket = await oAuth2Client.verifyIdToken({
-      idToken: tokens.id_token,
-      audience: process.env.GOOGLE_CLIENT_ID,
-    });
-    const payload = ticket.getPayload();
-    const { email, name, picture } = payload || {};
-    const [firstName, ...lastNameParts] = (name || '').split(' ');
-    const lastName = lastNameParts.join(' ');
+        const payload = ticket.getPayload();
+        const { email, name, picture } = payload;
+        const [firstName, ...lastNameParts] = name.split(' ');
+        const lastName = lastNameParts.join(' ');
 
-    let user = await User.findOne({ email });
+        let user = await User.findOne({ email });
 
-    if (!user) {
-      user = await User.create({
-        name: firstName,
-        secondName: lastName,
-        email,
-        profilePicture: picture,
-        isVerified: true,
-      });
+        if (!user) {
+            user = await User.create({
+                name: firstName,
+                secondName: lastName,
+                email,
+                profilePicture: picture,
+                isVerified: true,
+            });
+        }
+
+        const appToken = generateToken(user);
+
+        res.status(200).json({
+            token: appToken,
+            user: {
+                id: user._id,
+                name: user.name,
+                secondName: user.secondName,
+                email: user.email,
+                profilePicture: user.profilePicture,
+            }
+        });
+
+    } catch (error) {
+        console.error('Google Auth Error:', error);
+        if (error.response?.data) {
+            console.error("Google Error response data:", error.response.data);
+        }
+        res.status(500).json({ message: 'Google authentication failed.', error: error.message });
     }
-
-    const appToken = generateToken(user);
-
-    // respond with JSON for the React app
-    res.status(200).json({
-      token: appToken,
-      user: {
-        id: user._id,
-        name: user.name,
-        secondName: user.secondName,
-        email: user.email,
-        profilePicture: user.profilePicture,
-      }
-    });
-
-  } catch (error) {
-    // Extra debug logs — these often contain Google's "redirect_uri" details
-    console.error('Google Auth Error:', error.toString());
-    console.error('Google Error response data:', error.response?.data || error);
-    console.error('Google Error config data:', error.config?.data || error?.response?.config || null);
-
-    res.status(500).json({ message: 'Google authentication failed.', error: error.message });
-  }
 };
 
 

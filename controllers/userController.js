@@ -200,7 +200,12 @@ const verifyOtpAndLogin = async (req, res) => {
 };
 
 const googleAuthCallback = async (req, res) => {
-    const { code } = req.query;
+    const { code } = req.body;   // ✅ take code from body
+  console.log("!!! [DEBUG] Received code:", code);
+
+   if (!code) {
+    return res.status(400).json({ message: "Missing authorization code" });
+  }
 
     try {
         const oAuth2Client = new OAuth2Client(
@@ -209,8 +214,7 @@ const googleAuthCallback = async (req, res) => {
             process.env.GOOGLE_OAUTH_REDIRECT_URI
         );
 
-        console.log("!!! [DEBUG] Received code:", code);
-        console.log("!!! [DEBUG] Using Redirect URI:", process.env.GOOGLE_OAUTH_REDIRECT_URI);
+        
 
         // ✅ Explicitly include redirect_uri here
         const { tokens } = await oAuth2Client.getToken({
@@ -257,9 +261,7 @@ const googleAuthCallback = async (req, res) => {
 
     } catch (error) {
         console.error('Google Auth Error:', error);
-        if (error.response?.data) {
-            console.error("Google Error response data:", error.response.data);
-        }
+        
         res.status(500).json({ message: 'Google authentication failed.', error: error.message });
     }
 };

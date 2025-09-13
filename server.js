@@ -10,6 +10,14 @@ const { Server } = require('socket.io');
 
 // Load environment variables
 dotenv.config();
+console.log("✅ CLIENT_URL:", process.env.CLIENT_URL);
+console.log("✅ GOOGLE_CLIENT_ID:", process.env.GOOGLE_CLIENT_ID);
+console.log("✅ GOOGLE_OAUTH_REDIRECT_URI:", process.env.GOOGLE_OAUTH_REDIRECT_URI);
+
+if (process.env.GOOGLE_CLIENT_SECRET) {
+  console.log("✅ GOOGLE_CLIENT_SECRET: [LOADED]");
+} else {
+  console.log("❌ GOOGLE_CLIENT_SECRET is missing!");
 
 // Uncaught exception handler
 process.on('uncaughtException', (err) => {

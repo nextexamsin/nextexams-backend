@@ -209,6 +209,10 @@ const googleAuthCallback = async (req, res) => {
             process.env.GOOGLE_OAUTH_REDIRECT_URI
         );
 
+        // <-- EDIT 1: Add this line for debugging.
+        // This will print the exact URI your server is using into the Render logs.
+        console.log("!!! [DEBUG] Using Redirect URI:", process.env.GOOGLE_OAUTH_REDIRECT_URI);
+
         const { tokens } = await oAuth2Client.getToken(code);
         oAuth2Client.setCredentials(tokens);
 
@@ -218,7 +222,7 @@ const googleAuthCallback = async (req, res) => {
         });
         const payload = ticket.getPayload();
         
-        const { email, name } = payload;
+        const { email, name, picture } = payload; // Added 'picture'
         const [firstName, ...lastNameParts] = name.split(' ');
         const lastName = lastNameParts.join(' ');
 
@@ -229,18 +233,30 @@ const googleAuthCallback = async (req, res) => {
                 name: firstName,
                 secondName: lastName,
                 email,
+                profilePicture: picture, // Added profile picture
                 isVerified: true,
             });
         }
         
         const appToken = generateToken(user);
 
-        // Redirect back to your frontend with your app's token
-       res.redirect(`${process.env.CLIENT_URL}/auth/callback?token=${appToken}`);
+        // <-- EDIT 2: Change the redirect to a JSON response for your React app.
+        // Your React component is waiting for this data.
+        res.status(200).json({
+            token: appToken,
+            user: {
+                id: user._id,
+                name: user.name,
+                secondName: user.secondName,
+                email: user.email,
+                profilePicture: user.profilePicture,
+            }
+        });
 
     } catch (error) {
         console.error('Google Auth Error:', error);
-        res.redirect(`${process.env.CLIENT_URL}/login?error=google-auth-failed`);
+        // <-- EDIT 3: Also change the error case to a JSON response.
+        res.status(500).json({ message: 'Google authentication failed.', error: error.message });
     }
 };
 

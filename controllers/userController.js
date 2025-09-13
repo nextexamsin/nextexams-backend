@@ -200,78 +200,78 @@ const verifyOtpAndLogin = async (req, res) => {
 };
 
 const googleAuthCallback = async (req, res) => {
-    const { code } = req.body;   // ✅ take code from body
+  const { code } = req.body;
 
-    console.log("========== GOOGLE AUTH DEBUG ==========");
-    console.log(">> Code received:", code);
-    console.log(">> Using redirect_uri:", process.env.GOOGLE_OAUTH_REDIRECT_URI);
-    console.log(">> Client ID:", process.env.GOOGLE_CLIENT_ID);
-    console.log(">> Server URL:", process.env.CLIENT_URL);
-    console.log("=======================================");
+  console.log("========== GOOGLE AUTH DEBUG ==========");
+  console.log(">> Code received:", code);
+  console.log("=======================================");
 
-    if (!code) {
-        return res.status(400).json({ message: "Missing authorization code" });
+  if (!code) {
+    return res.status(400).json({ message: "Missing authorization code" });
+  }
+
+  try {
+    // 🔴 Hardcode redirectUri here
+    const redirectUri = "https://nextexams-api.onrender.com/api/users/auth/google/callback";
+
+    const oAuth2Client = new OAuth2Client(
+      process.env.GOOGLE_CLIENT_ID,
+      process.env.GOOGLE_CLIENT_SECRET,
+      redirectUri
+    );
+
+    console.log(">> Using redirect_uri:", redirectUri);
+
+    // ✅ Pass the same redirectUri when exchanging code
+    const { tokens } = await oAuth2Client.getToken({
+      code,
+      redirect_uri: redirectUri,
+    });
+
+    oAuth2Client.setCredentials(tokens);
+
+    const ticket = await oAuth2Client.verifyIdToken({
+      idToken: tokens.id_token,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+
+    const payload = ticket.getPayload();
+    const { email, name, picture } = payload;
+    const [firstName, ...lastNameParts] = name.split(" ");
+    const lastName = lastNameParts.join(" ");
+
+    let user = await User.findOne({ email });
+
+    if (!user) {
+      user = await User.create({
+        name: firstName,
+        secondName: lastName,
+        email,
+        profilePicture: picture,
+        isVerified: true,
+      });
     }
 
-    try {
-        const oAuth2Client = new OAuth2Client(
-            process.env.GOOGLE_CLIENT_ID,
-            process.env.GOOGLE_CLIENT_SECRET,
-            process.env.GOOGLE_OAUTH_REDIRECT_URI
-        );
+    const appToken = generateToken(user);
 
-        // ✅ Explicitly include redirect_uri here
-        const { tokens } = await oAuth2Client.getToken({
-            code,
-            redirect_uri: process.env.GOOGLE_OAUTH_REDIRECT_URI,
-        });
-
-        oAuth2Client.setCredentials(tokens);
-
-        const ticket = await oAuth2Client.verifyIdToken({
-            idToken: tokens.id_token,
-            audience: process.env.GOOGLE_CLIENT_ID,
-        });
-
-        const payload = ticket.getPayload();
-        const { email, name, picture } = payload;
-
-        const [firstName = "", ...lastNameParts] = (name || "").split(" ");
-        const lastName = lastNameParts.join(" ");
-
-        let user = await User.findOne({ email });
-
-        if (!user) {
-            user = await User.create({
-                name: firstName,
-                secondName: lastName,
-                email,
-                profilePicture: picture,
-                isVerified: true,
-            });
-        }
-
-        const appToken = generateToken(user);
-
-        res.status(200).json({
-            token: appToken,
-            user: {
-                id: user._id,
-                name: user.name,
-                secondName: user.secondName,
-                email: user.email,
-                profilePicture: user.profilePicture,
-            }
-        });
-
-    } catch (error) {
-        console.error("❌ Google Auth Error:", error?.response?.data || error.message);
-        res.status(500).json({
-            message: "Google authentication failed.",
-            error: error?.response?.data || error.message,
-        });
-    }
+    res.status(200).json({
+      token: appToken,
+      user: {
+        id: user._id,
+        name: user.name,
+        secondName: user.secondName,
+        email: user.email,
+        profilePicture: user.profilePicture,
+      },
+    });
+  } catch (error) {
+    console.error("❌ Google Auth Error:", error.response?.data || error);
+    res
+      .status(500)
+      .json({ message: "Google authentication failed.", error: error.message });
+  }
 };
+
 
 
 

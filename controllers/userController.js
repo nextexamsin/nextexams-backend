@@ -213,7 +213,10 @@ const googleAuthCallback = async (req, res) => {
         // This will print the exact URI your server is using into the Render logs.
         console.log("!!! [DEBUG] Using Redirect URI:", process.env.GOOGLE_OAUTH_REDIRECT_URI);
 
-        const { tokens } = await oAuth2Client.getToken(code);
+        const { tokens } = await oAuth2Client.getToken({
+    code: code,
+    redirect_uri: process.env.GOOGLE_OAUTH_REDIRECT_URI
+});
         oAuth2Client.setCredentials(tokens);
 
         const ticket = await oAuth2Client.verifyIdToken({

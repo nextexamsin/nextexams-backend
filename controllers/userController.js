@@ -206,58 +206,49 @@ const googleAuthCallback = async (req, res) => {
     return res.status(400).json({ message: "Missing authorization code" });
   }
 
-  try {
-    const oAuth2Client = new OAuth2Client(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-      process.env.GOOGLE_OAUTH_REDIRECT_URI // Use the env variable
-    );
+  // --- HARDCODED VALUES FOR FINAL DIAGNOSTIC TEST ---
+  // Replace these placeholders with your actual values.
+  const CLIENT_ID = "37325378179-93c97i8iqvfpk5dsr61dv4gg1q5ajulu.apps.googleusercontent.com"; // PASTE YOUR CLIENT ID HERE
+  const CLIENT_SECRET = "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"; // PASTE YOUR CLIENT SECRET HERE
+  const REDIRECT_URI = "https://nextexams-api.onrender.com/api/users/auth/google/callback";
+  // --- END OF HARDCODED VALUES ---
 
-    // Explicitly pass the redirect_uri here for maximum reliability
+  console.log("--- FINAL DIAGNOSTIC: Using hardcoded credentials ---");
+  console.log("Client ID:", CLIENT_ID);
+  console.log("Redirect URI:", REDIRECT_URI);
+
+  try {
+    const oAuth2Client = new OAuth2Client(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
+
     const { tokens } = await oAuth2Client.getToken({
       code,
-      redirect_uri: process.env.GOOGLE_OAUTH_REDIRECT_URI,
+      redirect_uri: REDIRECT_URI, // Use the hardcoded value
     });
 
+    // If we get here, it worked. The rest of the function can proceed.
+    console.log("✅ SUCCESS! Token exchange with hardcoded values worked.");
+    
     oAuth2Client.setCredentials(tokens);
-
     const ticket = await oAuth2Client.verifyIdToken({
       idToken: tokens.id_token,
-      audience: process.env.GOOGLE_CLIENT_ID,
+      audience: CLIENT_ID,
     });
-
     const payload = ticket.getPayload();
-    const { email, name, picture } = payload;
-    const [firstName, ...lastNameParts] = name.split(" ");
-    const lastName = lastNameParts.join(" ");
-
-    let user = await User.findOne({ email });
-
-    if (!user) {
-      user = await User.create({
-        name: firstName,
-        secondName: lastName,
-        email,
-        profilePicture: picture,
-        isVerified: true,
-      });
-    }
-
-    const appToken = generateToken(user);
-
-    res.status(200).json({
-      token: appToken,
-      user: {
-        id: user._id,
-        name: user.name,
-        // ... include other user details as needed
-      },
+    // ... (logic to find/create user)
+    
+    // Simplified success response for the test
+    return res.status(200).json({ 
+        message: "Authentication successful with hardcoded values.",
+        email: payload.email 
     });
 
   } catch (error) {
-    console.error("❌ Google Auth Error:", error.response?.data || error.message);
+    console.error("❌ FINAL DIAGNOSTIC FAILED with hardcoded values.");
+    console.error("This strongly indicates the issue is on Google's side.");
+    console.error("Error from Google:", error.response?.data || error.message);
+    
     res.status(500).json({ 
-      message: "Google authentication failed.", 
+      message: "Authentication failed even with hardcoded credentials.", 
       error: error.response?.data?.error || error.message 
     });
   }

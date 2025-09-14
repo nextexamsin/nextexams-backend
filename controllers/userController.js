@@ -196,7 +196,7 @@ const verifyOtpAndLogin = async (req, res) => {
 const googleAuthCallback = async (req, res) => {
     const { code } = req.body;
 
-    // --- DIAGNOSTIC LOGS ---
+    // --- Diagnostic Logs ---
     console.log("--- RECEIVED GOOGLE AUTH REQUEST ---");
     console.log("Auth Code Received:", code ? "Yes" : "No");
     console.log("Using Client ID:", process.env.GOOGLE_CLIENT_ID);
@@ -245,7 +245,7 @@ const googleAuthCallback = async (req, res) => {
             secondName: user.secondName,
             email: user.email,
             role: user.role,
-            token: generateToken(user._id),
+            token: generateToken(user._id), // Make sure this matches your token generation logic
             passExpiry: user.passExpiry,
             category: user.category,
             primeAccessUntil: user.primeAccessUntil,

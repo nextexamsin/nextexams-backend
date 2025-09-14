@@ -200,32 +200,49 @@ const verifyOtpAndLogin = async (req, res) => {
 };
 
 const googleAuthCallback = async (req, res) => {
-  const { code } = req.body;
+  // --- START: TIME SKEW DIAGNOSTIC ---
+  // This block checks your server's time against an official time source.
+  try {
+    const timeApiResponse = await fetch('http://worldtimeapi.org/api/timezone/Etc/UTC');
+    if (timeApiResponse.ok) {
+        const currentTime = await timeApiResponse.json();
+        const serverTime = new Date();
+        const gmtTime = new Date(currentTime.utc_datetime);
 
-  console.log("========== GOOGLE AUTH DEBUG ==========");
-  console.log(">> Code received:", code);
-  console.log("=======================================");
+        const timeDifferenceSeconds = Math.abs(serverTime.getTime() - gmtTime.getTime()) / 1000;
+        
+        console.log(`[TIME CHECK] Server Time (UTC): ${serverTime.toUTCString()}`);
+        console.log(`[TIME CHECK] Official GMT Time: ${gmtTime.toUTCString()}`);
+        console.log(`[TIME CHECK] Time difference is ~${timeDifferenceSeconds.toFixed(2)} seconds.`);
+
+        if (timeDifferenceSeconds > 60) {
+            console.error("!!! CRITICAL: Server clock is out of sync by more than 1 minute!");
+        }
+    } else {
+        console.warn("Could not verify server time: worldtimeapi.org returned an error.");
+    }
+  } catch (timeError) {
+      console.error("Could not verify server time against worldtimeapi.org", timeError);
+  }
+  // --- END: TIME SKEW DIAGNOSTIC ---
+
+  const { code } = req.body; // Expecting code from POST request body
 
   if (!code) {
-    return res.status(400).json({ message: "Missing authorization code" });
+    return res.status(400).json({ message: "Missing authorization code from request body" });
   }
 
   try {
-    // 🔴 Hardcode redirectUri here
-    const redirectUri = "https://nextexams-api.onrender.com/api/users/auth/google/callback";
-
     const oAuth2Client = new OAuth2Client(
       process.env.GOOGLE_CLIENT_ID,
       process.env.GOOGLE_CLIENT_SECRET,
-      redirectUri
+      process.env.GOOGLE_OAUTH_REDIRECT_URI // Use the env variable here
     );
 
-    console.log(">> Using redirect_uri:", redirectUri);
-
-    // ✅ Pass the same redirectUri when exchanging code
+    // ✅ Explicitly pass redirect_uri in the getToken call for maximum reliability
     const { tokens } = await oAuth2Client.getToken({
       code,
-      redirect_uri: redirectUri,
+      redirect_uri: process.env.GOOGLE_OAUTH_REDIRECT_URI,
     });
 
     oAuth2Client.setCredentials(tokens);
@@ -265,13 +282,13 @@ const googleAuthCallback = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("❌ Google Auth Error:", error.response?.data || error);
+    // Log the detailed error from Google for better debugging
+    console.error("❌ Google Auth Error:", error.response?.data || error.message);
     res
       .status(500)
-      .json({ message: "Google authentication failed.", error: error.message });
+      .json({ message: "Google authentication failed.", error: error.response?.data?.error || error.message });
   }
 };
-
 
 
 

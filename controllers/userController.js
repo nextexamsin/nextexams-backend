@@ -194,58 +194,73 @@ const verifyOtpAndLogin = async (req, res) => {
 };
 
 const googleAuthCallback = async (req, res) => {
-  const { code } = req.body;
+    // 1. Get the authorization code from the frontend request body
+    const { code } = req.body;
 
-  if (!code) {
-    return res.status(400).json({ message: "Missing authorization code" });
-  }
+    if (!code) {
+        return res.status(400).json({ message: "Google authorization code is missing." });
+    }
 
-  // --- HARDCODED VALUES FOR FINAL DIAGNOSTIC TEST ---
-  // Replace these placeholders with your actual values.
-  const CLIENT_ID = "37325378179-93c97i8iqvfpk5dsr61dv4gg1q5ajulu.apps.googleusercontent.com"; // PASTE YOUR CLIENT ID HERE
-  const CLIENT_SECRET = "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"; // PASTE YOUR CLIENT SECRET HERE
-  const REDIRECT_URI = "https://nextexams-api.onrender.com/api/users/auth/google/callback";
-  // --- END OF HARDCODED VALUES ---
+    try {
+        // 2. Initialize the Google OAuth2 client with credentials from environment variables
+        // These MUST match the values in your Google Cloud Console and Render environment.
+        const oAuth2Client = new OAuth2Client(
+            process.env.GOOGLE_CLIENT_ID,
+            process.env.GOOGLE_CLIENT_SECRET,
+            process.env.GOOGLE_OAUTH_REDIRECT_URI
+        );
 
-  console.log("--- FINAL DIAGNOSTIC: Using hardcoded credentials ---");
-  console.log("Client ID:", CLIENT_ID);
-  console.log("Redirect URI:", REDIRECT_URI);
+        // 3. Exchange the authorization code for access and ID tokens
+        const { tokens } = await oAuth2Client.getToken(code);
+        oAuth2Client.setCredentials(tokens);
 
-  try {
-    const oAuth2Client = new OAuth2Client(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
+        // 4. Verify the ID token to get the user's profile information
+        const ticket = await oAuth2Client.verifyIdToken({
+            idToken: tokens.id_token,
+            audience: process.env.GOOGLE_CLIENT_ID,
+        });
 
-    const { tokens } = await oAuth2Client.getToken({
-      code,
-      redirect_uri: REDIRECT_URI, // Use the hardcoded value
-    });
+        const payload = ticket.getPayload();
+        const { email, name, picture, given_name, family_name } = payload;
 
-    // If we get here, it worked. The rest of the function can proceed.
-    console.log("✅ SUCCESS! Token exchange with hardcoded values worked.");
-    
-    oAuth2Client.setCredentials(tokens);
-    const ticket = await oAuth2Client.verifyIdToken({
-      idToken: tokens.id_token,
-      audience: CLIENT_ID,
-    });
-    const payload = ticket.getPayload();
-    // ... (logic to find/create user)
-    
-    // Simplified success response for the test
-    return res.status(200).json({ 
-        message: "Authentication successful with hardcoded values.",
-        email: payload.email 
-    });
+        // 5. Check if the user already exists in your database
+        let user = await User.findOne({ email });
 
-  } catch (error) {
-    console.error("❌ FINAL DIAGNOSTIC FAILED with hardcoded values.");
-    console.error("This strongly indicates the issue is on Google's side.");
-    console.error("Error from Google:", error.response?.data || error.message);
-    
-    res.status(500).json({ 
-      message: "Authentication failed even with hardcoded credentials.", 
-      error: error.response?.data?.error || error.message 
-    });
-  }
+        // 6. If the user does not exist, create a new user account
+        if (!user) {
+            user = await User.create({
+                name: given_name || name.split(' ')[0], // Use given_name or fallback to first part of name
+                secondName: family_name || name.split(' ').slice(1).join(' ') || '', // Use family_name or the rest of the name
+                email,
+                profilePicture: picture,
+                isVerified: true, // Google-verified users are considered trusted
+                // 'password' field is not set, so they can only log in via Google
+            });
+        }
+
+        // 7. If user exists or was just created, generate a JWT and send user data to frontend
+        // This response structure should match your regular login response.
+        res.status(200).json({
+            _id: user._id,
+            name: user.name,
+            secondName: user.secondName,
+            email: user.email,
+            role: user.role,
+            token: generateToken(user), // Generate JWT for session management
+            profilePicture: user.profilePicture,
+            passExpiry: user.passExpiry,
+            category: user.category,
+            primeAccessUntil: user.primeAccessUntil,
+        });
+
+    } catch (error) {
+        // 8. Handle any errors during the authentication process
+        console.error("❌ Google Authentication Error:", error.response?.data || error.message);
+        res.status(500).json({
+            message: "An error occurred during Google authentication.",
+            error: error.response?.data?.error_description || "Failed to exchange authorization code for tokens."
+        });
+    }
 };
 
 

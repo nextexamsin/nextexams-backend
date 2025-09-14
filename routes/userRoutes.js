@@ -1,22 +1,19 @@
 const express = require("express");
 const router = express.Router();
 const { body } = require("express-validator");
-const { protect, adminOnly } = require("../middleware/authMiddleware");
-const rateLimit = require('express-rate-limit');
+const { protect } = require("../middleware/authMiddleware");
 
-// NEW: Rate limiter for OTP requests to prevent spamming
-const otpLimiter = rateLimit({
-	windowMs: 5 * 60 * 1000, // 5 minutes
-	max: 5, // Limit each IP to 5 requests per window
-	message: 'Too many requests from this IP, please try again after 5 minutes',
-	standardHeaders: true,
-	legacyHeaders: false,
-});
+// --- (CHANGE 1) REMOVE the old inline rate limiter ---
+// const rateLimit = require('express-rate-limit'); // No longer needed here
+// const otpLimiter = rateLimit({ ... }); // This is now handled centrally
 
-// --- Controller Imports (Updated) ---
+// --- (CHANGE 2) IMPORT the new authLimiter from our utils file ---
+const { authLimiter } = require("../utils/rateLimiter");
+
+// --- Controller Imports ---
 const {
-    sendOtp,        
-    verifyOtpAndLogin, 
+    sendOtp,
+    verifyOtpAndLogin,
     getUserProfile,
     updateUserProfile,
     saveQuestion,
@@ -32,14 +29,11 @@ const {
 
 const { getPassHistory } = require("../controllers/passController");
 
-// --- Public Routes ---
+// --- 🔓 Public Routes with Strict Rate Limiting ---
 
-// The old '/register' and '/login' routes are now removed.
-
-// --- NEW OTP AUTHENTICATION ROUTES ---
 router.post(
     "/send-otp",
-    otpLimiter, // Apply rate limiting
+    authLimiter, // (CHANGE 3) APPLY the new, centralized limiter
     [
         body("email", "Please include a valid email").isEmail().normalizeEmail(),
     ],
@@ -48,7 +42,7 @@ router.post(
 
 router.post(
     "/verify-otp",
-    otpLimiter, // Use the same limiter
+    authLimiter, // APPLY the same strict limiter here
     [
         body("email", "Please include a valid email").isEmail().normalizeEmail(),
         body("otp", "OTP must be a 6-digit number").isLength({ min: 6, max: 6 }).isNumeric(),
@@ -56,9 +50,14 @@ router.post(
     verifyOtpAndLogin
 );
 
+// APPLY the strict limiter to the Google callback as well to prevent abuse
+router.post('/auth/google/callback', authLimiter, googleAuthCallback);
+router.get('/auth/google/callback', authLimiter, googleAuthCallback);
 
-// --- Protected Routes (User must be logged in) ---
-// (No changes below this line)
+
+// --- 🔐 Protected Routes (User must be logged in) ---
+// These routes are now covered by the more generous `apiLimiter` in server.js,
+// so no additional limiters are needed here.
 
 router.route('/profile')
     .get(protect, getUserProfile)
@@ -81,11 +80,6 @@ router.post('/unenroll/:groupId', protect, unenrollFromTestSeriesGroup);
 router.get('/attempted-tests', protect, getAttemptedTests);
 router.get('/attempted-tests-summary', protect, getAttemptedSummaries);
 router.get('/profile/pass-history', protect, getPassHistory);
-router.get('/auth/google/callback', googleAuthCallback);
-router.post('/auth/google/callback', googleAuthCallback);
-
-
-
-
 
 module.exports = router;
+

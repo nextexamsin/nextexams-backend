@@ -1,7 +1,45 @@
-// nextExams-backend/utils/rateLimiter.js
-
 const Redis = require('ioredis');
-const { sendEmail } = require('./emailService');
+const rateLimit = require('express-rate-limit');
+const { sendEmail } = require('./emailService'); // Assuming this path is correct
+
+// ====================================================================
+// --- (NEW) API REQUEST RATE LIMITERS (for express-rate-limit) ---
+// This new section fixes the "429 Too Many Requests" error.
+// ====================================================================
+
+/**
+ * @description A strict rate limiter for unauthenticated routes like OTP and login.
+ * This is crucial for preventing brute-force attacks.
+ */
+const authLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000, // 5 minutes
+    max: 10, // Limit each IP to 10 requests per window
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+        message: 'Too many authentication attempts from this IP, please try again after 5 minutes.',
+    },
+});
+
+/**
+ * @description A more generous rate limiter for general API usage by logged-in users.
+ */
+const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 500,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+        message: 'Too many requests from this IP, please try again after 15 minutes.',
+    },
+});
+
+
+// ====================================================================
+// --- (EXISTING) EMAIL PROVIDER QUOTA LIMITER ---
+// Your original, excellent logic for managing email sending limits.
+// No changes were made to this section.
+// ====================================================================
 
 const redis = new Redis(process.env.UPSTASH_REDIS_REST_URL, { tls: {} });
 
@@ -68,4 +106,10 @@ const sendEmailWithRateLimit = async (emailOptions) => {
     throw new Error("All email providers are currently over their free limit or unavailable.");
 };
 
-module.exports = { sendEmailWithRateLimit };
+
+// --- (NEW) EXPORT EVERYTHING ---
+module.exports = { 
+    sendEmailWithRateLimit,
+    authLimiter,
+    apiLimiter 
+};

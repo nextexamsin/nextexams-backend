@@ -196,25 +196,27 @@ const verifyOtpAndLogin = async (req, res) => {
 const googleAuthCallback = async (req, res) => {
     const { code } = req.body;
 
+    // --- DIAGNOSTIC LOGS ---
+    console.log("--- RECEIVED GOOGLE AUTH REQUEST ---");
+    console.log("Auth Code Received:", code ? "Yes" : "No");
+    console.log("Using Client ID:", process.env.GOOGLE_CLIENT_ID);
+    console.log("Using Frontend Callback URI for Exchange:", process.env.GOOGLE_OAUTH_FRONTEND_CALLBACK_URI);
+    // -------------------------
+
     if (!code) {
         return res.status(400).json({ message: "Missing authorization code from client." });
     }
 
     try {
-        // --- (THIS IS THE FIX) ---
-        // The OAuth2Client MUST be initialized with the SAME redirect_uri that the
-        // FRONTEND used to get the authorization code. We now use our new environment variable for this.
         const oAuth2Client = new OAuth2Client(
             process.env.GOOGLE_CLIENT_ID,
             process.env.GOOGLE_CLIENT_SECRET,
-            process.env.GOOGLE_OAUTH_FRONTEND_CALLBACK_URI // Use the FRONTEND callback URI here
+            process.env.GOOGLE_OAUTH_FRONTEND_CALLBACK_URI // This MUST be the frontend URI
         );
 
-        // Exchange the authorization code for tokens
         const { tokens } = await oAuth2Client.getToken(code);
         oAuth2Client.setCredentials(tokens);
 
-        // Verify the ID token to get user information
         const ticket = await oAuth2Client.verifyIdToken({
             idToken: tokens.id_token,
             audience: process.env.GOOGLE_CLIENT_ID,
@@ -223,40 +225,39 @@ const googleAuthCallback = async (req, res) => {
         const payload = ticket.getPayload();
         const { email, name, picture, given_name, family_name } = payload;
         
-        // Find or create the user in your database
         let user = await User.findOne({ email });
 
         if (!user) {
             user = await User.create({
-                name: given_name || name.split(' ')[0],
+                name: given_name || name.split(' ')[0] || 'User',
                 secondName: family_name || name.split(' ')[1] || '',
                 email,
                 profilePicture: picture,
-                isVerified: true, // User is verified via Google
+                isVerified: true,
                 authProvider: 'google',
             });
         }
 
-        // Send the complete user object and a JWT token back to the client
+        console.log("✅ Google authentication successful for:", email);
         res.status(200).json({
             _id: user._id,
             name: user.name,
             secondName: user.secondName,
             email: user.email,
             role: user.role,
-            token: generateToken(user._id), // Use your existing token generator
+            token: generateToken(user._id),
             passExpiry: user.passExpiry,
             category: user.category,
             primeAccessUntil: user.primeAccessUntil,
         });
 
     } catch (error) {
-        // Log the detailed error on the server for debugging
-        console.error("❌ Google Authentication Error:", error.response?.data || error.message);
+        console.error("❌ GOOGLE AUTHENTICATION FAILED ❌");
+        console.error("Error Message:", error.message);
+        console.error("Error Details from Google:", error.response?.data);
         
-        // Send a generic but helpful error message to the client
         res.status(500).json({
-            message: "Google authentication failed.",
+            message: "Google authentication failed on the server.",
             error: error.response?.data?.error || "An internal server error occurred."
         });
     }

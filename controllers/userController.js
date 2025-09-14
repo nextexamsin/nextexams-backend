@@ -200,93 +200,63 @@ const verifyOtpAndLogin = async (req, res) => {
 };
 
 const googleAuthCallback = async (req, res) => {
-  // --- START: TIME SKEW DIAGNOSTIC ---
-  // This block checks your server's time against an official time source.
-  try {
-    const timeApiResponse = await fetch('http://worldtimeapi.org/api/timezone/Etc/UTC');
-    if (timeApiResponse.ok) {
-        const currentTime = await timeApiResponse.json();
-        const serverTime = new Date();
-        const gmtTime = new Date(currentTime.utc_datetime);
-
-        const timeDifferenceSeconds = Math.abs(serverTime.getTime() - gmtTime.getTime()) / 1000;
-        
-        console.log(`[TIME CHECK] Server Time (UTC): ${serverTime.toUTCString()}`);
-        console.log(`[TIME CHECK] Official GMT Time: ${gmtTime.toUTCString()}`);
-        console.log(`[TIME CHECK] Time difference is ~${timeDifferenceSeconds.toFixed(2)} seconds.`);
-
-        if (timeDifferenceSeconds > 60) {
-            console.error("!!! CRITICAL: Server clock is out of sync by more than 1 minute!");
-        }
-    } else {
-        console.warn("Could not verify server time: worldtimeapi.org returned an error.");
-    }
-  } catch (timeError) {
-      console.error("Could not verify server time against worldtimeapi.org", timeError);
-  }
-  // --- END: TIME SKEW DIAGNOSTIC ---
-
-  const { code } = req.body; // Expecting code from POST request body
+  const { code } = req.body;
 
   if (!code) {
-    return res.status(400).json({ message: "Missing authorization code from request body" });
+    return res.status(400).json({ message: "Missing authorization code" });
   }
 
+  console.log("--- FINAL NETWORK TEST: Attempting direct fetch to Google ---");
+
   try {
-    const oAuth2Client = new OAuth2Client(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-      process.env.GOOGLE_OAUTH_REDIRECT_URI // Use the env variable here
-    );
+    const tokenEndpoint = 'https://oauth2.googleapis.com/token';
 
-    // ✅ Explicitly pass redirect_uri in the getToken call for maximum reliability
-    const { tokens } = await oAuth2Client.getToken({
-      code,
-      redirect_uri: process.env.GOOGLE_OAUTH_REDIRECT_URI,
+    const params = new URLSearchParams();
+    params.append('code', code);
+    params.append('client_id', process.env.GOOGLE_CLIENT_ID);
+    params.append('client_secret', process.env.GOOGLE_CLIENT_SECRET);
+    params.append('redirect_uri', process.env.GOOGLE_OAUTH_REDIRECT_URI);
+    params.append('grant_type', 'authorization_code');
+
+    const googleResponse = await fetch(tokenEndpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: params,
     });
+    
+    const responseData = await googleResponse.json();
 
-    oAuth2Client.setCredentials(tokens);
+    console.log("✅ Direct fetch to Google SUCCEEDED. Status:", googleResponse.status);
+    console.log("Google's direct response:", responseData);
 
-    const ticket = await oAuth2Client.verifyIdToken({
-      idToken: tokens.id_token,
-      audience: process.env.GOOGLE_CLIENT_ID,
-    });
-
-    const payload = ticket.getPayload();
-    const { email, name, picture } = payload;
-    const [firstName, ...lastNameParts] = name.split(" ");
-    const lastName = lastNameParts.join(" ");
-
-    let user = await User.findOne({ email });
-
-    if (!user) {
-      user = await User.create({
-        name: firstName,
-        secondName: lastName,
-        email,
-        profilePicture: picture,
-        isVerified: true,
-      });
+    // If we get here, the network is working. We check if the response is what we expect.
+    if (!googleResponse.ok) {
+        // This means the network is fine, but Google still rejected the request.
+        // The error is likely invalid_grant or another logical issue.
+        return res.status(401).json({ 
+            message: "Network OK, but Google rejected the token exchange.",
+            error: responseData 
+        });
     }
 
-    const appToken = generateToken(user);
-
-    res.status(200).json({
-      token: appToken,
-      user: {
-        id: user._id,
-        name: user.name,
-        secondName: user.secondName,
-        email: user.email,
-        profilePicture: user.profilePicture,
-      },
+    // If we get here, EVERYTHING WORKED! Now we can proceed.
+    // This part is simplified just for the test.
+    res.status(200).json({ 
+        message: "SUCCESS! Direct fetch worked. Tokens received.",
+        tokens: responseData
     });
+
   } catch (error) {
-    // Log the detailed error from Google for better debugging
-    console.error("❌ Google Auth Error:", error.response?.data || error.message);
-    res
-      .status(500)
-      .json({ message: "Google authentication failed.", error: error.response?.data?.error || error.message });
+    console.error("❌ FINAL NETWORK TEST FAILED. This confirms a network issue on the server.");
+    console.error("Underlying Error:", error.cause || error.message);
+
+    res.status(500).json({ 
+        message: "Server failed to make an outbound HTTPS request to Google.",
+        error: error.cause ? error.cause.code : error.code,
+        details: "This is likely an issue with the hosting environment (Render). Please contact their support.",
+    });
   }
 };
 

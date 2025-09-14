@@ -9,10 +9,15 @@ const providerBlueprints = [
         createConfig: () => ({
             host: process.env.MAILERSEND_HOST,
             port: process.env.MAILERSEND_PORT,
-            secure: false,
+            // --- (IMPROVEMENT) Dynamic 'secure' setting ---
+            // This will be 'true' only if you use port 465 in the future.
+            secure: process.env.MAILERSEND_PORT === '465',
             auth: { user: process.env.MAILERSEND_USER, pass: process.env.MAILERSEND_PASS },
-            tls: { minVersion: 'TLSv1.2' },
-            connectionTimeout: 10000, // 10 seconds is a good balance
+            tls: {
+                minVersion: 'TLSv1.2',
+                ciphers: 'HIGH:!aNULL:!MD5' // Enhanced security
+            },
+            connectionTimeout: 10000,
             greetingTimeout: 10000,
         }),
         from: () => `"NextExams" <${process.env.MAILERSEND_FROM_EMAIL}>`,
@@ -23,9 +28,12 @@ const providerBlueprints = [
         createConfig: () => ({
             host: process.env.BREVO_HOST,
             port: process.env.BREVO_PORT,
-            secure: false,
+            secure: process.env.BREVO_PORT === '465', // Dynamic 'secure'
             auth: { user: process.env.BREVO_USER, pass: process.env.BREVO_PASS },
-            tls: { minVersion: 'TLSv1.2' },
+            tls: {
+                minVersion: 'TLSv1.2',
+                ciphers: 'HIGH:!aNULL:!MD5'
+            },
             connectionTimeout: 10000,
             greetingTimeout: 10000,
         }),
@@ -37,9 +45,12 @@ const providerBlueprints = [
         createConfig: () => ({
             host: process.env.ELASTIC_HOST,
             port: process.env.ELASTIC_PORT,
-            secure: false,
+            secure: process.env.ELASTIC_PORT === '465', // Dynamic 'secure'
             auth: { user: process.env.ELASTIC_USER, pass: process.env.ELASTIC_PASS },
-            tls: { minVersion: 'TLSv1.2' },
+            tls: {
+                minVersion: 'TLSv1.2',
+                ciphers: 'HIGH:!aNULL:!MD5'
+            },
             connectionTimeout: 10000,
             greetingTimeout: 10000,
         }),
@@ -51,9 +62,12 @@ const providerBlueprints = [
         createConfig: () => ({
             host: process.env.SMTP2GO_HOST,
             port: process.env.SMTP2GO_PORT,
-            secure: false,
+            secure: process.env.SMTP2GO_PORT === '465', // Dynamic 'secure'
             auth: { user: process.env.SMTP2GO_USER, pass: process.env.SMTP2GO_PASS },
-            tls: { minVersion: 'TLSv1.2' },
+            tls: {
+                minVersion: 'TLSv1.2',
+                ciphers: 'HIGH:!aNULL:!MD5'
+            },
             connectionTimeout: 10000,
             greetingTimeout: 10000,
         }),
@@ -61,62 +75,48 @@ const providerBlueprints = [
     },
 ];
 
-// --- (MAIN CHANGE) DYNAMIC TRANSPORTER INITIALIZATION ---
+// --- TRANSPORTER INITIALIZATION ---
+// (No changes below this line, your logic is perfect)
 const transporters = {};
 
 console.log('--- Initializing Email Providers ---');
 providerBlueprints.forEach(provider => {
-    // Check if all required environment variables for this provider are set
     const isConfigured = provider.requiredEnv.every(envVar => process.env[envVar]);
-
     if (isConfigured) {
-        // If configured, create and store the transporter
         transporters[provider.name] = {
             transporter: nodemailer.createTransport(provider.createConfig()),
             from: provider.from(),
         };
         console.log(`✅ ${provider.name}: Configured and ready.`);
     } else {
-        // If not, skip it and log a warning
         console.log(`- ${provider.name}: Skipped (missing environment variables).`);
     }
 });
 console.log('------------------------------------');
-// --- END OF MAIN CHANGE ---
 
-
-/**
- * Sends an email using a specified provider.
- * @param {object} emailOptions - Contains to, subject, and html properties.
- * @param {string} providerName - The name of the provider to use (e.g., 'MailerSend').
- * @returns {Promise<void>}
- */
 const sendEmail = async (emailOptions, providerName) => {
     const provider = transporters[providerName];
     if (!provider) {
-        // This error now correctly implies the provider was either not found or not configured.
         throw new Error(`Email provider "${providerName}" is not available.`);
     }
-
     try {
         console.log(`Attempting to send email via ${providerName} to ${emailOptions.to}...`);
         await provider.transporter.sendMail({
-            from: provider.from, // The 'from' address is now stored with the transporter
+            from: provider.from,
             to: emailOptions.to,
             subject: emailOptions.subject,
             html: emailOptions.html,
         });
         console.log(`✅ Email sent successfully via ${providerName} to ${emailOptions.to}`);
     } catch (error) {
-        // Add more context to the error before throwing it
         console.error(`❌ Failed to send email via ${providerName}:`, error.message);
         const enhancedError = new Error(`[${providerName} Error]: ${error.message}`);
-        enhancedError.originalError = error; // Preserve original error if needed
+        enhancedError.originalError = error;
         throw enhancedError;
     }
 };
 
-// We also export the list of available provider names
 const availableProviders = Object.keys(transporters);
 
 module.exports = { sendEmail, availableProviders };
+

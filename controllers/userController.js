@@ -194,27 +194,27 @@ const verifyOtpAndLogin = async (req, res) => {
 };
 
 const googleAuthCallback = async (req, res) => {
-    // 1. Get the authorization code from the frontend request body
     const { code } = req.body;
 
     if (!code) {
-        return res.status(400).json({ message: "Google authorization code is missing." });
+        return res.status(400).json({ message: "Missing authorization code from client." });
     }
 
     try {
-        // 2. Initialize the Google OAuth2 client with credentials from environment variables
-        // These MUST match the values in your Google Cloud Console and Render environment.
+        // --- (THIS IS THE FIX) ---
+        // The OAuth2Client MUST be initialized with the SAME redirect_uri that the
+        // FRONTEND used to get the authorization code. We now use our new environment variable for this.
         const oAuth2Client = new OAuth2Client(
             process.env.GOOGLE_CLIENT_ID,
             process.env.GOOGLE_CLIENT_SECRET,
-            process.env.GOOGLE_OAUTH_REDIRECT_URI
+            process.env.GOOGLE_OAUTH_FRONTEND_CALLBACK_URI // Use the FRONTEND callback URI here
         );
 
-        // 3. Exchange the authorization code for access and ID tokens
+        // Exchange the authorization code for tokens
         const { tokens } = await oAuth2Client.getToken(code);
         oAuth2Client.setCredentials(tokens);
 
-        // 4. Verify the ID token to get the user's profile information
+        // Verify the ID token to get user information
         const ticket = await oAuth2Client.verifyIdToken({
             idToken: tokens.id_token,
             audience: process.env.GOOGLE_CLIENT_ID,
@@ -222,43 +222,42 @@ const googleAuthCallback = async (req, res) => {
 
         const payload = ticket.getPayload();
         const { email, name, picture, given_name, family_name } = payload;
-
-        // 5. Check if the user already exists in your database
+        
+        // Find or create the user in your database
         let user = await User.findOne({ email });
 
-        // 6. If the user does not exist, create a new user account
         if (!user) {
             user = await User.create({
-                name: given_name || name.split(' ')[0], // Use given_name or fallback to first part of name
-                secondName: family_name || name.split(' ').slice(1).join(' ') || '', // Use family_name or the rest of the name
+                name: given_name || name.split(' ')[0],
+                secondName: family_name || name.split(' ')[1] || '',
                 email,
                 profilePicture: picture,
-                isVerified: true, // Google-verified users are considered trusted
-                // 'password' field is not set, so they can only log in via Google
+                isVerified: true, // User is verified via Google
+                authProvider: 'google',
             });
         }
 
-        // 7. If user exists or was just created, generate a JWT and send user data to frontend
-        // This response structure should match your regular login response.
+        // Send the complete user object and a JWT token back to the client
         res.status(200).json({
             _id: user._id,
             name: user.name,
             secondName: user.secondName,
             email: user.email,
             role: user.role,
-            token: generateToken(user), // Generate JWT for session management
-            profilePicture: user.profilePicture,
+            token: generateToken(user._id), // Use your existing token generator
             passExpiry: user.passExpiry,
             category: user.category,
             primeAccessUntil: user.primeAccessUntil,
         });
 
     } catch (error) {
-        // 8. Handle any errors during the authentication process
+        // Log the detailed error on the server for debugging
         console.error("❌ Google Authentication Error:", error.response?.data || error.message);
+        
+        // Send a generic but helpful error message to the client
         res.status(500).json({
-            message: "An error occurred during Google authentication.",
-            error: error.response?.data?.error_description || "Failed to exchange authorization code for tokens."
+            message: "Google authentication failed.",
+            error: error.response?.data?.error || "An internal server error occurred."
         });
     }
 };

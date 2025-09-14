@@ -10,7 +10,11 @@ const emailProviders = [
             port: process.env.MAILERSEND_PORT,
             secure: false,
             auth: { user: process.env.MAILERSEND_USER, pass: process.env.MAILERSEND_PASS },
-            tls: { minVersion: 'TLSv1.2' }
+            tls: { minVersion: 'TLSv1.2' },
+            // --- ADD THESE LINES ---
+            connectionTimeout: 15000, // 15 seconds
+            greetingTimeout: 15000,   // 15 seconds
+            // ---------------------
         },
         from: `"NextExams" <${process.env.MAILERSEND_FROM_EMAIL}>`,
     },
@@ -21,7 +25,11 @@ const emailProviders = [
             port: process.env.BREVO_PORT,
             secure: false,
             auth: { user: process.env.BREVO_USER, pass: process.env.BREVO_PASS },
-            tls: { minVersion: 'TLSv1.2' }
+            tls: { minVersion: 'TLSv1.2' },
+            // --- ADD THESE LINES ---
+            connectionTimeout: 15000, // 15 seconds
+            greetingTimeout: 15000,   // 15 seconds
+            // ---------------------
         },
         from: `"NextExams" <${process.env.BREVO_FROM_EMAIL}>`,
     },
@@ -32,7 +40,11 @@ const emailProviders = [
             port: process.env.ELASTIC_PORT,
             secure: false,
             auth: { user: process.env.ELASTIC_USER, pass: process.env.ELASTIC_PASS },
-            tls: { minVersion: 'TLSv1.2' }
+            tls: { minVersion: 'TLSv1.2' },
+            // --- ADD THESE LINES ---
+            connectionTimeout: 15000, // 15 seconds
+            greetingTimeout: 15000,   // 15 seconds
+            // ---------------------
         },
         from: `"NextExams" <${process.env.ELASTIC_FROM_EMAIL}>`,
     },
@@ -43,11 +55,17 @@ const emailProviders = [
             port: process.env.SMTP2GO_PORT,
             secure: false,
             auth: { user: process.env.SMTP2GO_USER, pass: process.env.SMTP2GO_PASS },
-            tls: { minVersion: 'TLSv1.2' }
+            tls: { minVersion: 'TLSv1.2' },
+            // --- ADD THESE LINES ---
+            connectionTimeout: 15000, // 15 seconds
+            greetingTimeout: 15000,   // 15 seconds
+            // ---------------------
         },
         from: `"NextExams" <${process.env.SMTP2GO_FROM_EMAIL}>`,
     },
 ];
+
+// --- No changes are needed below this line ---
 
 const transporters = {};
 emailProviders.forEach(provider => {

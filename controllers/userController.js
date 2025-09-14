@@ -62,45 +62,47 @@ const sendOtp = async (req, res) => {
     }
 
     try {
+        const adminEmail = "nextexamsin@gmail.com";
+        let attemptsData = { attemptsUsed: 0, attemptsLeft: Infinity };
 
-        if (isSignUp) {
-    const allowedDomains = [
-        // Google
-        'gmail.com',
-        // Microsoft
-        'outlook.com', 'hotmail.com', 'live.com', 'msn.com',
-        // Yahoo
-        'yahoo.com', 'yahoo.co.in', 'yahoo.co.uk', 'yahoo.ca',
-        // Apple
-        'icloud.com', 'me.com', 'mac.com',
-        // Other popular providers
-        'aol.com', 'zoho.com', 'protonmail.com', 'gmx.com', 'yandex.com'
-    ];
-    
-    const emailDomain = email.split('@')[1];
+        // --- OTP Limit Logic for Non-Admin Users ---
+        if (email !== adminEmail) {
+            const otpRequestKey = `otp-limit:email:${email}`;
+            const otpRequestCount = parseInt(await redis.get(otpRequestKey), 10) || 0;
 
-    if (!allowedDomains.includes(emailDomain)) {
-        return res.status(400).json({ 
-            // --- UPDATED MESSAGE ---
-            message: "To prevent spam, we only allow sign-ups from major email providers like Gmail, Outlook, Yahoo, and iCloud." 
-        });
-    }
-}
-
-
-        const otpRequestKey = `otp-limit:email:${email}`;
-        const otpRequestCount = parseInt(await redis.get(otpRequestKey), 10) || 0;
-
-        // --- MODIFIED RATE LIMIT LOGIC ---
-        if (otpRequestCount >= 5) {
-            return res.status(429).json({ 
-                message: "You have exhausted your daily OTP limit. Please try again after 24 hours or contact support.",
-                contact: "contact@nextexams.in"
-            });
+            if (otpRequestCount >= 5) {
+                return res.status(429).json({ 
+                    message: "You have exhausted your daily OTP limit. Please try again after 24 hours or contact support.",
+                    contact: "contact@nextexams.in"
+                });
+            }
+            
+            // Increment the count before sending the response
+            const newCount = await redis.incr(otpRequestKey);
+            if (newCount === 1) { // Set expiry only on the first request of the day
+                await redis.expire(otpRequestKey, 24 * 60 * 60);
+            }
+            attemptsData = { attemptsUsed: newCount, attemptsLeft: 5 - newCount };
         }
         
+        // --- Domain Validation for Sign-Up ---
+        if (isSignUp) {
+            const allowedDomains = [
+                'gmail.com', 'outlook.com', 'hotmail.com', 'live.com', 'msn.com',
+                'yahoo.com', 'yahoo.co.in', 'yahoo.co.uk', 'yahoo.ca',
+                'icloud.com', 'me.com', 'mac.com', 'aol.com', 'zoho.com', 
+                'protonmail.com', 'gmx.com', 'yandex.com'
+            ];
+            const emailDomain = email.split('@')[1];
+            if (!allowedDomains.includes(emailDomain)) {
+                return res.status(400).json({ 
+                    message: "To prevent spam, we only allow sign-ups from major email providers like Gmail, Outlook, Yahoo, and iCloud." 
+                });
+            }
+        }
+
+        // --- Find or Create User Logic ---
         let user = await User.findOne({ email });
-        // ... (your existing user finding/creation logic remains the same) ...
         if (isSignUp) {
             if (user && user.isVerified) { return res.status(400).json({ message: 'User with this email already exists. Please log in.' }); }
             if (!name) { return res.status(400).json({ message: 'First name is required for sign up.' }); }
@@ -110,6 +112,7 @@ const sendOtp = async (req, res) => {
             if (!user || !user.isVerified) { return res.status(404).json({ message: 'No registered user found with this email. Please sign up.' }); }
         }
 
+        // --- Generate, Save, and Send OTP ---
         const otp = generateOTP();
         user.emailOtp = otp;
         user.emailOtpExpires = new Date(Date.now() + 10 * 60 * 1000);
@@ -121,28 +124,19 @@ const sendOtp = async (req, res) => {
             html: `<p>Your One-Time Password is: <strong>${otp}</strong>. It is valid for 10 minutes.</p>`,
         });
 
-        // Increment the count and set expiry
-        const newCount = await redis.incr(otpRequestKey);
-        if (newCount === 1) { // Set expiry only on the first request of the day
-            await redis.expire(otpRequestKey, 24 * 60 * 60);
-        }
-        
-        // --- NEW CONDITIONAL RESPONSE ---
-        // On the 3rd or 4th attempt, send a warning.
-        if (newCount === 3 || newCount === 4) {
+        // --- Final Response Logic ---
+        const { attemptsUsed } = attemptsData;
+        if (email !== adminEmail && (attemptsUsed === 3 || attemptsUsed === 4)) {
             return res.status(200).json({ 
                 message: `OTP sent successfully.`,
-                warning: `Please be aware, you have used ${newCount} of your 5 daily OTP attempts.`,
-                attemptsUsed: newCount,
-                attemptsLeft: 5 - newCount
+                warning: `Please be aware, you have used ${attemptsUsed} of your 5 daily OTP attempts.`,
+                ...attemptsData
             });
         }
 
-        // For all other successful attempts
         res.status(200).json({ 
             message: `OTP sent successfully to ${email}`,
-            attemptsUsed: newCount,
-            attemptsLeft: 5 - newCount
+            ...attemptsData
         });
 
     } catch (error) {

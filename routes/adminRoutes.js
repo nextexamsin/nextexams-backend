@@ -10,7 +10,7 @@ const {
   grantPrimeAccess,
   getFeedback,
   updateFeedbackStatus,
-  createAdmin 
+  // createAdmin 
 } = require("../controllers/userController");
 
 // router.post("/create-admin", createAdmin);

@@ -702,21 +702,52 @@ const updateFeedbackStatus = async (req, res) => {
 
 
 const getUserProfile = async (req, res) => {
-  const user = await User.findById(req.user._id);
+    try {
+        const userId = req.user._id;
 
-  if (user) {
-    res.json({
-      _id: user._id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      primeAccessUntil: user.primeAccessUntil,
-      category: user.category,
-    });
-  } else {
-    res.status(404);
-    throw new Error('User not found');
-  }
+        // 1. Find the user by their ID from the token
+        const user = await User.findById(userId).lean(); // .lean() improves performance for read-only queries
+
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        // 2. Calculate the user's test statistics
+        const attempted = await TestSeries.aggregate([
+            { $unwind: "$attempts" },
+            { $match: { "attempts.userId": new mongoose.Types.ObjectId(userId) } },
+            {
+                $group: {
+                    _id: null,
+                    total: { $sum: 1 },
+                    completed: { $sum: { $cond: [{ $eq: ["$attempts.isCompleted", true] }, 1, 0] } },
+                    inProgress: { $sum: { $cond: [{ $eq: ["$attempts.isCompleted", false] }, 1, 0] } },
+                },
+            },
+        ]);
+        const stats = attempted[0] || { total: 0, completed: 0, inProgress: 0 };
+
+        // 3. Send a single, complete profile object back to the frontend
+        res.json({
+            _id: user._id,
+            name: user.name,
+            secondName: user.secondName || '', // Include secondName, default to empty string
+            email: user.email,
+            role: user.role,
+            primeAccessUntil: user.primeAccessUntil,
+            passExpiry: user.passExpiry, // Also include passExpiry for consistency
+            category: user.category || 'UR', // Default to UR if not set
+            stats: { // Nest the stats object inside the profile data
+                total: stats.total,
+                completed: stats.completed,
+                inProgress: stats.inProgress
+            }
+        });
+
+    } catch (error) {
+        console.error("Get Profile Error:", error);
+        res.status(500).json({ message: "Server error while fetching user profile." });
+    }
 };
 
 module.exports = {

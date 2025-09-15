@@ -38,7 +38,6 @@ const userSchema = new mongoose.Schema({
     },
 });
 
-// --- REMOVED PASSWORD HASHING LOGIC ---
-// The 'pre save' hook and 'matchPassword' method are no longer needed.
+
 
 module.exports = mongoose.model('User', userSchema);

@@ -196,13 +196,6 @@ const verifyOtpAndLogin = async (req, res) => {
 const googleAuthCallback = async (req, res) => {
     const { code } = req.body;
 
-    // --- Diagnostic Logs ---
-    console.log("--- RECEIVED GOOGLE AUTH REQUEST ---");
-    console.log("Auth Code Received:", code ? "Yes" : "No");
-    console.log("Using Client ID:", process.env.GOOGLE_CLIENT_ID);
-    console.log("Using Frontend Callback URI for Exchange:", process.env.GOOGLE_OAUTH_FRONTEND_CALLBACK_URI);
-    // -------------------------
-
     if (!code) {
         return res.status(400).json({ message: "Missing authorization code from client." });
     }

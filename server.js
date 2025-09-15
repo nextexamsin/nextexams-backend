@@ -37,8 +37,6 @@ const adminRoutes = require('./routes/adminRoutes');
 const feedbackRoutes = require('./routes/feedbackRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware.js');
-
-// --- (CHANGE 1) IMPORT our new, granular rate limiters ---
 const { apiLimiter } = require('./utils/rateLimiter');
 
 // --- INITIALIZE EXPRESS APP ---
@@ -46,15 +44,15 @@ const app = express();
 const server = http.createServer(app);
 
 // --- SECURITY & MIDDLEWARE CONFIGURATION ---
-app.set('trust proxy', 1); // Trust proxy headers from services like Render
-app.use(helmet()); // Standard security headers
-app.use(express.json()); // JSON body parser
-app.use(express.urlencoded({ extended: true })); // URL-encoded body parser
+app.set('trust proxy', 1);
+app.use(helmet());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Dynamic CORS Policy
+// Dynamic CORS Policy for the main API
 const allowedOrigins = [
-    process.env.CLIENT_URL, // Your production frontend URL from .env
-    'http://localhost:5173'    // Your local development URL
+    process.env.CLIENT_URL,
+    'http://localhost:5173'
 ];
 const corsOptions = {
     origin: (origin, callback) => {
@@ -70,16 +68,17 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 
-// --- (CHANGE 2) REMOVE the old global rate limiter ---
-/*
-const apiLimiter = rateLimit({ ... }); // This is now defined in utils/rateLimiter.js
-app.use('/api/', apiLimiter); // We will apply this more specifically now
-*/
+// --- SOCKET.IO INTEGRATION (THIS IS THE UPDATED SECTION) ---
+const io = new Server(server, {
+    // This explicit CORS configuration is more reliable for Socket.IO on deployed platforms.
+    cors: {
+        origin: process.env.CLIENT_URL, // Explicitly allow your frontend URL
+        methods: ["GET", "POST"],
+        credentials: true
+    },
+});
 
-// --- SOCKET.IO INTEGRATION ---
-const io = new Server(server, { cors: corsOptions });
-
-let onlineUsers = {}; // Simple in-memory store for online users
+let onlineUsers = {};
 io.on('connection', (socket) => {
     console.log(`🔌 New client connected: ${socket.id}`);
     socket.on('addNewUser', (userId) => {
@@ -99,6 +98,7 @@ io.on('connection', (socket) => {
     });
 });
 
+// Make io and onlineUsers available to all routes
 app.use((req, res, next) => {
     req.io = io;
     req.onlineUsers = onlineUsers;
@@ -108,11 +108,7 @@ app.use((req, res, next) => {
 // --- API ROUTES ---
 app.get('/', (req, res) => res.send('✅ NextExams API is running successfully.'));
 
-// --- (CHANGE 3) APPLY rate limiters on a per-group basis ---
-// Public authentication routes in `userRoutes` will have their own strict limiter.
-app.use('/api/users', userRoutes); 
-
-// Apply the generous `apiLimiter` to all routes that are for authenticated users.
+app.use('/api/users', userRoutes);
 app.use('/api/questions', apiLimiter, questionRoutes);
 app.use('/api/testseries', apiLimiter, testSeriesRoutes);
 app.use('/api/testseries-groups', apiLimiter, testSeriesGroupRoutes);
@@ -152,4 +148,3 @@ process.on('unhandledRejection', (err) => {
         process.exit(1);
     });
 });
-

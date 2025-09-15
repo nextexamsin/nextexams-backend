@@ -700,6 +700,12 @@ const updateFeedbackStatus = async (req, res) => {
   }
 };
 
+/**
+ * @desc     Get all profile data for the logged-in user, including test stats.
+ * @route    GET /api/users/profile
+ * @access   Private
+ */
+
 
 const getUserProfile = async (req, res) => {
     try {

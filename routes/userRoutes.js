@@ -25,6 +25,7 @@ const {
     getAttemptedTests,
     getAttemptedSummaries,
     googleAuthCallback,
+    completeGoogleSignup
 } = require("../controllers/userController");
 
 const { getPassHistory } = require("../controllers/passController");
@@ -49,6 +50,7 @@ router.post(
     ],
     verifyOtpAndLogin
 );
+router.post('/complete-google-signup', completeGoogleSignup);
 
 // APPLY the strict limiter to the Google callback as well to prevent abuse
 router.post('/auth/google/callback', authLimiter, googleAuthCallback);

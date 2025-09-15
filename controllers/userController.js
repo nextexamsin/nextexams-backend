@@ -12,6 +12,7 @@ const { sendEmailWithRateLimit } = require('../utils/rateLimiter');
 const Redis = require('ioredis');
 const redis = new Redis(process.env.UPSTASH_REDIS_REST_URL, { tls: {} });
 const { OAuth2Client } = require('google-auth-library');
+const jwt = require('jsonwebtoken');
 
 
 
@@ -196,124 +197,82 @@ const verifyOtpAndLogin = async (req, res) => {
 
 const googleAuthCallback = async (req, res) => {
     const { code } = req.body;
-
     if (!code) {
         return res.status(400).json({ message: "Missing authorization code from client." });
     }
-
     try {
         const oAuth2Client = new OAuth2Client(
             process.env.GOOGLE_CLIENT_ID,
             process.env.GOOGLE_CLIENT_SECRET,
             process.env.GOOGLE_OAUTH_FRONTEND_CALLBACK_URI
         );
-
         const { tokens } = await oAuth2Client.getToken(code);
         oAuth2Client.setCredentials(tokens);
-
         const ticket = await oAuth2Client.verifyIdToken({
             idToken: tokens.id_token,
             audience: process.env.GOOGLE_CLIENT_ID,
         });
-
         const payload = ticket.getPayload();
         const { email, name, picture, given_name, family_name } = payload;
         
-        // Check if the user already exists
         let user = await User.findOne({ email });
 
         if (user) {
-            // --- EXISTING USER ---
-            // If the user exists, log them in directly.
+            // Existing user - log them in
             console.log("✅ Google authentication for existing user:", email);
             res.status(200).json({
-                isNewUser: false, // Flag that this is an existing user
+                isNewUser: false,
                 userData: {
-                    _id: user._id,
-                    name: user.name,
-                    secondName: user.secondName,
-                    email: user.email,
-                    role: user.role,
+                    _id: user._id, name: user.name, secondName: user.secondName, email: user.email, role: user.role,
                     token: generateToken(user._id),
-                    passExpiry: user.passExpiry,
-                    category: user.category,
-                    primeAccessUntil: user.primeAccessUntil,
+                    passExpiry: user.passExpiry, category: user.category, primeAccessUntil: user.primeAccessUntil,
                 }
             });
         } else {
-            // --- NEW USER ---
-            // If the user is new, send back their details with a temporary token.
-            // This token is a signal to the frontend to ask for more info.
+            // New user - prompt for more info
             const newUserInfo = {
                 name: given_name || name.split(' ')[0] || 'User',
                 secondName: family_name || name.split(' ')[1] || '',
                 email,
                 profilePicture: picture,
             };
-            
-            // Create a short-lived token containing the new user's Google info
-            const tempToken = generateToken(newUserInfo, '15m'); // Expires in 15 minutes
-
+            const tempToken = jwt.sign({ id: newUserInfo }, process.env.JWT_SECRET, { expiresIn: '15m' });
             res.status(200).json({
-                isNewUser: true, // Flag that this is a new user
+                isNewUser: true,
                 tempToken: tempToken,
                 prefillData: newUserInfo,
             });
         }
     } catch (error) {
         console.error("❌ GOOGLE AUTH FAILURE:", error.response?.data || error.message);
-        res.status(500).json({
-            message: "Google authentication failed on the server.",
-            error: error.response?.data?.error || "An internal server error occurred."
-        });
+        res.status(500).json({ message: "Google authentication failed on the server." });
     }
 };
 
 
-// --- ADD THIS NEW FUNCTION TO YOUR userController.js ---
+
 const completeGoogleSignup = async (req, res) => {
     const { tempToken, whatsapp } = req.body;
-
     if (!tempToken || !whatsapp) {
         return res.status(400).json({ message: 'Missing required information.' });
     }
-
     try {
-        // Verify the temporary token to get the user's Google info back
         const decoded = jwt.verify(tempToken, process.env.JWT_SECRET);
-
-        const { name, secondName, email, profilePicture } = decoded.id; // Assuming generateToken nests data in 'id'
-
-        // Check again if user was created in the meantime
+        const { name, secondName, email, profilePicture } = decoded.id;
         const existingUser = await User.findOne({ email });
         if (existingUser) {
             return res.status(400).json({ message: 'User with this email already exists.' });
         }
-
-        // Now create the user with ALL required fields
         const newUser = await User.create({
-            name,
-            secondName,
-            email,
-            profilePicture,
-            whatsapp, // The missing piece!
-            isVerified: true,
-            authProvider: 'google',
+            name, secondName, email, profilePicture, whatsapp,
+            isVerified: true, authProvider: 'google',
         });
-
         console.log("✅ New user successfully created via Google:", email);
         res.status(201).json({
-            _id: newUser._id,
-            name: newUser.name,
-            secondName: newUser.secondName,
-            email: newUser.email,
-            role: newUser.role,
-            token: generateToken(newUser._id), // The permanent login token
-            passExpiry: newUser.passExpiry,
-            category: newUser.category,
-            primeAccessUntil: newUser.primeAccessUntil,
+            _id: newUser._id, name: newUser.name, secondName: newUser.secondName, email: newUser.email, role: newUser.role,
+            token: generateToken(newUser._id),
+            passExpiry: newUser.passExpiry, category: newUser.category, primeAccessUntil: newUser.primeAccessUntil,
         });
-
     } catch (error) {
         console.error("❌ GOOGLE SIGNUP COMPLETION FAILED:", error);
         res.status(500).json({ message: 'Failed to complete sign-up. Your session may have expired. Please try again.' });

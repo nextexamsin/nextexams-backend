@@ -197,21 +197,26 @@ const verifyOtpAndLogin = async (req, res) => {
 
 const googleAuthCallback = async (req, res) => {
     const { code } = req.body;
+
     if (!code) {
         return res.status(400).json({ message: "Missing authorization code from client." });
     }
+
     try {
         const oAuth2Client = new OAuth2Client(
             process.env.GOOGLE_CLIENT_ID,
             process.env.GOOGLE_CLIENT_SECRET,
             process.env.GOOGLE_OAUTH_FRONTEND_CALLBACK_URI
         );
+
         const { tokens } = await oAuth2Client.getToken(code);
         oAuth2Client.setCredentials(tokens);
+
         const ticket = await oAuth2Client.verifyIdToken({
             idToken: tokens.id_token,
             audience: process.env.GOOGLE_CLIENT_ID,
         });
+
         const payload = ticket.getPayload();
         const { email, name, picture, given_name, family_name } = payload;
         
@@ -236,7 +241,11 @@ const googleAuthCallback = async (req, res) => {
                 email,
                 profilePicture: picture,
             };
-            const tempToken = jwt.sign({ id: newUserInfo }, process.env.JWT_SECRET, { expiresIn: '15m' });
+
+            // --- (THIS IS THE CHANGE) ---
+            // The temporary token now expires in 5 minutes for enhanced security.
+            const tempToken = jwt.sign({ id: newUserInfo }, process.env.JWT_SECRET, { expiresIn: '5m' });
+
             res.status(200).json({
                 isNewUser: true,
                 tempToken: tempToken,
@@ -252,6 +261,7 @@ const googleAuthCallback = async (req, res) => {
 
 
 const completeGoogleSignup = async (req, res) => {
+    // ... (This function remains exactly the same)
     const { tempToken, whatsapp } = req.body;
     if (!tempToken || !whatsapp) {
         return res.status(400).json({ message: 'Missing required information.' });

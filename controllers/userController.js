@@ -193,15 +193,9 @@ const verifyOtpAndLogin = async (req, res) => {
     }
 };
 
+
 const googleAuthCallback = async (req, res) => {
     const { code } = req.body;
-
-    // --- Final Diagnostic Logs ---
-    console.log("--- FINAL HANDSHAKE WITH GOOGLE ---");
-    console.log("Auth Code Received:", code ? "Yes" : "No");
-    console.log("Client ID Being Sent:", process.env.GOOGLE_CLIENT_ID);
-    console.log("Redirect URI Being Sent:", process.env.GOOGLE_OAUTH_FRONTEND_CALLBACK_URI);
-    // --------------------------------
 
     if (!code) {
         return res.status(400).json({ message: "Missing authorization code from client." });
@@ -238,7 +232,9 @@ const googleAuthCallback = async (req, res) => {
             });
         }
 
-        console.log("✅ Google authentication successful for:", email);
+        // Keep a success log for monitoring
+        console.log(`✅ Google authentication successful for: ${email}`); 
+
         res.status(200).json({
             _id: user._id,
             name: user.name,
@@ -252,10 +248,8 @@ const googleAuthCallback = async (req, res) => {
         });
 
     } catch (error) {
-        console.error("❌ GOOGLE AUTHENTICATION FAILED ON SERVER ❌");
-        console.error("This is likely due to a mismatch with the Redirect URI in the Google Console.");
-        console.error("Error Message:", error.message);
-        console.error("Error Details from Google:", error.response?.data);
+        // Keep detailed logs for server-side error tracking
+        console.error("❌ GOOGLE AUTH FAILURE:", error.response?.data || error.message);
         
         res.status(500).json({
             message: "Google authentication failed on the server.",

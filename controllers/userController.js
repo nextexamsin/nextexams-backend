@@ -196,6 +196,13 @@ const verifyOtpAndLogin = async (req, res) => {
 const googleAuthCallback = async (req, res) => {
     const { code } = req.body;
 
+    // --- Final Diagnostic Logs ---
+    console.log("--- FINAL HANDSHAKE WITH GOOGLE ---");
+    console.log("Auth Code Received:", code ? "Yes" : "No");
+    console.log("Client ID Being Sent:", process.env.GOOGLE_CLIENT_ID);
+    console.log("Redirect URI Being Sent:", process.env.GOOGLE_OAUTH_FRONTEND_CALLBACK_URI);
+    // --------------------------------
+
     if (!code) {
         return res.status(400).json({ message: "Missing authorization code from client." });
     }
@@ -204,7 +211,7 @@ const googleAuthCallback = async (req, res) => {
         const oAuth2Client = new OAuth2Client(
             process.env.GOOGLE_CLIENT_ID,
             process.env.GOOGLE_CLIENT_SECRET,
-            process.env.GOOGLE_OAUTH_FRONTEND_CALLBACK_URI // This MUST be the frontend URI
+            process.env.GOOGLE_OAUTH_FRONTEND_CALLBACK_URI // This MUST point to the .html file
         );
 
         const { tokens } = await oAuth2Client.getToken(code);
@@ -238,14 +245,15 @@ const googleAuthCallback = async (req, res) => {
             secondName: user.secondName,
             email: user.email,
             role: user.role,
-            token: generateToken(user._id), // Make sure this matches your token generation logic
+            token: generateToken(user._id),
             passExpiry: user.passExpiry,
             category: user.category,
             primeAccessUntil: user.primeAccessUntil,
         });
 
     } catch (error) {
-        console.error("❌ GOOGLE AUTHENTICATION FAILED ❌");
+        console.error("❌ GOOGLE AUTHENTICATION FAILED ON SERVER ❌");
+        console.error("This is likely due to a mismatch with the Redirect URI in the Google Console.");
         console.error("Error Message:", error.message);
         console.error("Error Details from Google:", error.response?.data);
         
@@ -255,7 +263,6 @@ const googleAuthCallback = async (req, res) => {
         });
     }
 };
-
 
 
 // PATCH /api/users/profile

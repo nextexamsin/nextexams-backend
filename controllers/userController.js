@@ -737,13 +737,14 @@ const getUserProfile = async (req, res) => {
         res.json({
             _id: user._id,
             name: user.name,
-            secondName: user.secondName || '', // Include secondName, default to empty string
+            secondName: user.secondName || '',
             email: user.email,
+            profilePicture: user.profilePicture, // <-- THIS LINE IS THE ONLY CHANGE
             role: user.role,
             primeAccessUntil: user.primeAccessUntil,
-            passExpiry: user.passExpiry, // Also include passExpiry for consistency
-            category: user.category || 'UR', // Default to UR if not set
-            stats: { // Nest the stats object inside the profile data
+            passExpiry: user.passExpiry,
+            category: user.category || 'UR',
+            stats: {
                 total: stats.total,
                 completed: stats.completed,
                 inProgress: stats.inProgress

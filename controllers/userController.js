@@ -218,21 +218,19 @@ const googleAuthCallback = async (req, res) => {
         let user = await User.findOne({ email });
 
         if (user) {
-            // --- THIS IS THE FIX FOR EXISTING USERS ---
-            // If the user exists but doesn't have a profile picture,
-            // add the one from Google and save it.
-            if (!user.profilePicture) {
-                user.profilePicture = picture;
-                await user.save();
-                console.log(`✅ Updated profile picture for existing user: ${email}`);
-            }
+            // --- FIX #1: UPDATE EXISTING USER ---
+            // If the user already exists (e.g., from OTP signup),
+            // update their profile picture from Google.
+            user.profilePicture = picture;
+            await user.save();
+            console.log(`✅ Google sign-in: Updated profile picture for existing user: ${email}`);
             
             // Now log them in.
-            console.log("✅ Google authentication for existing user:", email);
             res.status(200).json({
                 isNewUser: false,
                 userData: {
                     _id: user._id, name: user.name, secondName: user.secondName, email: user.email, role: user.role,
+                    profilePicture: user.profilePicture, // Also include it in the response
                     token: generateToken(user._id),
                     passExpiry: user.passExpiry, category: user.category, primeAccessUntil: user.primeAccessUntil,
                 }
@@ -261,7 +259,6 @@ const googleAuthCallback = async (req, res) => {
 
 
 const completeGoogleSignup = async (req, res) => {
-    // ... (This function remains exactly the same)
     const { tempToken, whatsapp } = req.body;
     if (!tempToken || !whatsapp) {
         return res.status(400).json({ message: 'Missing required information.' });
@@ -280,6 +277,7 @@ const completeGoogleSignup = async (req, res) => {
         console.log("✅ New user successfully created via Google:", email);
         res.status(201).json({
             _id: newUser._id, name: newUser.name, secondName: newUser.secondName, email: newUser.email, role: newUser.role,
+            profilePicture: newUser.profilePicture, // Also include it in the response
             token: generateToken(newUser._id),
             passExpiry: newUser.passExpiry, category: newUser.category, primeAccessUntil: newUser.primeAccessUntil,
         });
@@ -723,13 +721,13 @@ const getUserProfile = async (req, res) => {
         ]);
         const stats = attempted[0] || { total: 0, completed: 0, inProgress: 0 };
 
-        // --- THIS IS THE FIX FOR THE PROFILE PAGE ---
+        // --- FIX #2: Ensure profilePicture is always sent ---
         res.json({
             _id: user._id,
             name: user.name,
             secondName: user.secondName || '',
             email: user.email,
-            profilePicture: user.profilePicture, // Ensure this field is sent
+            profilePicture: user.profilePicture, // This will now have a value
             role: user.role,
             primeAccessUntil: user.primeAccessUntil,
             passExpiry: user.passExpiry,

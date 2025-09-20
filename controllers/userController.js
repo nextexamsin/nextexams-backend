@@ -739,7 +739,7 @@ const getUserProfile = async (req, res) => {
             name: user.name,
             secondName: user.secondName || '',
             email: user.email,
-            profilePicture: user.profilePicture, // <-- THIS LINE IS THE ONLY CHANGE
+            profilePicture: user.profilePicture, // <-- THIS IS THE ONLY CHANGE
             role: user.role,
             primeAccessUntil: user.primeAccessUntil,
             passExpiry: user.passExpiry,

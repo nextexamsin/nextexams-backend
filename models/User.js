@@ -1,16 +1,14 @@
-// nextExams-backend/models/User.js
-
 const mongoose = require('mongoose');
-// const bcrypt = require('bcryptjs'); // <-- REMOVED: No longer needed for OTP auth
 
 const userSchema = new mongoose.Schema({
     name: { type: String, required: true },
     secondName: { type: String, required: false },
     email: { type: String, unique: true, required: true },
-    // password: { type: String, required: true }, // <-- REMOVED: Replaced by OTP
+    profilePicture: { type: String },
+
     role: { type: String, enum: ['admin', 'user'], default: 'user' },
     passExpiry: { type: Date },
-    whatsapp: { type: String, unique: true }, // Note: 'required' might be too strict if it's optional on the signup form
+    whatsapp: { type: String, unique: true },
     countryCode: { type: String, default: "+91" },
     isBlocked: { type: Boolean, default: false },
     primeAccessUntil: { type: Date, default: null },
@@ -22,11 +20,9 @@ const userSchema = new mongoose.Schema({
     },
     savedQuestions: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Question' }],
     enrolledGroups: [{ type: mongoose.Schema.Types.ObjectId, ref: 'TestSeriesGroup' }],
-
-    // --- NEW FIELDS FOR OTP AUTHENTICATION ---
     isVerified: {
         type: Boolean,
-        default: false // Tracks if the user has confirmed their email at least once
+        default: false
     },
     emailOtp: {
         type: String,
@@ -36,8 +32,12 @@ const userSchema = new mongoose.Schema({
         type: Date,
         default: null
     },
+    // Add authProvider to track how the user signed up
+    authProvider: {
+        type: String,
+        enum: ['email', 'google'],
+        default: 'email'
+    }
 });
-
-
 
 module.exports = mongoose.model('User', userSchema);

@@ -197,33 +197,37 @@ const verifyOtpAndLogin = async (req, res) => {
 
 const googleAuthCallback = async (req, res) => {
     const { code } = req.body;
-
     if (!code) {
         return res.status(400).json({ message: "Missing authorization code from client." });
     }
-
     try {
         const oAuth2Client = new OAuth2Client(
             process.env.GOOGLE_CLIENT_ID,
             process.env.GOOGLE_CLIENT_SECRET,
             process.env.GOOGLE_OAUTH_FRONTEND_CALLBACK_URI
         );
-
         const { tokens } = await oAuth2Client.getToken(code);
         oAuth2Client.setCredentials(tokens);
-
         const ticket = await oAuth2Client.verifyIdToken({
             idToken: tokens.id_token,
             audience: process.env.GOOGLE_CLIENT_ID,
         });
-
         const payload = ticket.getPayload();
         const { email, name, picture, given_name, family_name } = payload;
         
         let user = await User.findOne({ email });
 
         if (user) {
-            // Existing user - log them in
+            // --- THIS IS THE FIX FOR EXISTING USERS ---
+            // If the user exists but doesn't have a profile picture,
+            // add the one from Google and save it.
+            if (!user.profilePicture) {
+                user.profilePicture = picture;
+                await user.save();
+                console.log(`✅ Updated profile picture for existing user: ${email}`);
+            }
+            
+            // Now log them in.
             console.log("✅ Google authentication for existing user:", email);
             res.status(200).json({
                 isNewUser: false,
@@ -241,11 +245,7 @@ const googleAuthCallback = async (req, res) => {
                 email,
                 profilePicture: picture,
             };
-
-            // --- (THIS IS THE CHANGE) ---
-            // The temporary token now expires in 5 minutes for enhanced security.
             const tempToken = jwt.sign({ id: newUserInfo }, process.env.JWT_SECRET, { expiresIn: '5m' });
-
             res.status(200).json({
                 isNewUser: true,
                 tempToken: tempToken,
@@ -710,36 +710,26 @@ const updateFeedbackStatus = async (req, res) => {
 const getUserProfile = async (req, res) => {
     try {
         const userId = req.user._id;
-
-        // 1. Find the user by their ID from the token
-        const user = await User.findById(userId).lean(); // .lean() improves performance for read-only queries
+        const user = await User.findById(userId).lean();
 
         if (!user) {
             return res.status(404).json({ message: 'User not found' });
         }
 
-        // 2. Calculate the user's test statistics
         const attempted = await TestSeries.aggregate([
             { $unwind: "$attempts" },
             { $match: { "attempts.userId": new mongoose.Types.ObjectId(userId) } },
-            {
-                $group: {
-                    _id: null,
-                    total: { $sum: 1 },
-                    completed: { $sum: { $cond: [{ $eq: ["$attempts.isCompleted", true] }, 1, 0] } },
-                    inProgress: { $sum: { $cond: [{ $eq: ["$attempts.isCompleted", false] }, 1, 0] } },
-                },
-            },
+            { $group: { _id: null, total: { $sum: 1 }, completed: { $sum: { $cond: [{ $eq: ["$attempts.isCompleted", true] }, 1, 0] } }, inProgress: { $sum: { $cond: [{ $eq: ["$attempts.isCompleted", false] }, 1, 0] } } } },
         ]);
         const stats = attempted[0] || { total: 0, completed: 0, inProgress: 0 };
 
-        // 3. Send a single, complete profile object back to the frontend
+        // --- THIS IS THE FIX FOR THE PROFILE PAGE ---
         res.json({
             _id: user._id,
             name: user.name,
             secondName: user.secondName || '',
             email: user.email,
-            profilePicture: user.profilePicture, // <-- THIS IS THE ONLY CHANGE
+            profilePicture: user.profilePicture, // Ensure this field is sent
             role: user.role,
             primeAccessUntil: user.primeAccessUntil,
             passExpiry: user.passExpiry,
@@ -750,7 +740,6 @@ const getUserProfile = async (req, res) => {
                 inProgress: stats.inProgress
             }
         });
-
     } catch (error) {
         console.error("Get Profile Error:", error);
         res.status(500).json({ message: "Server error while fetching user profile." });

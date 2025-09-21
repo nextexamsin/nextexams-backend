@@ -13,6 +13,8 @@ const detailedQuestionPopulation = {
   select: 'questionType correctAnswer answerMin answerMax marks negativeMarks'
 };
 
+
+
 // POST: Create a new Test Series
 export const createTestSeries = async (req, res) => {
   try {
@@ -200,19 +202,54 @@ export const getAllTestSeries = async (req, res) => {
 };
 
 
+const calculateMaxMarks = (test) => {
+    if (!test || !test.sections) return 0;
+    
+    // This logic is based on your 'calcScore' `totalMarks` calculation
+    return test.sections.reduce((totalMarks, section) => {
+        const sectionTotal = section.questions.reduce((sectionMarks, question) => {
+            // Find the correct marks for this question based on the hierarchy
+            if (section.markingScheme && section.markingScheme[question.questionType]) {
+                return sectionMarks + section.markingScheme[question.questionType].marks;
+            }
+            if (section.marksPerQuestion != null) {
+                return sectionMarks + section.marksPerQuestion;
+            }
+            if (test.markingScheme && test.markingScheme[question.questionType]) {
+                return sectionMarks + test.markingScheme[question.questionType].marks;
+            }
+            if (test.marksPerQuestion != null) {
+                return sectionMarks + test.marksPerQuestion;
+            }
+            return sectionMarks + (question.marks || 1);
+        }, 0);
+        return totalMarks + sectionTotal;
+    }, 0);
+};
+
 // GET: Single test series by ID
 export const getTestSeriesById = async (req, res) => {
-  try {
-    const test = await TestSeries.findById(req.params.id)
-      .populate('sections.questions', 'questionText questionImage options marks negativeMarks questionType')
-      .populate('attempts.userId', 'name email');
-    if (!test) return res.status(404).json({ error: 'TestSeries not found' });
-    res.json(test);
-  } catch (err) {
-    console.error('Get TestSeries By ID Error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
+    try {
+        const test = await TestSeries.findById(req.params.id)
+            .populate('sections.questions', 'questionText questionImage options marks negativeMarks questionType')
+            .populate('attempts.userId', 'name email')
+            .lean(); // Use .lean() as we are adding a property
+
+        if (!test) return res.status(404).json({ error: 'TestSeries not found' });
+
+        // --- THIS IS THE FIX ---
+        // If totalMarks isn't already stored, calculate and add it to the response.
+        if (!test.totalMarks) {
+            test.totalMarks = calculateMaxMarks(test);
+        }
+
+        res.json(test);
+    } catch (err) {
+        console.error('Get TestSeries By ID Error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
 };
+
 
 // PUT: Update test series
 export const updateTestSeries = async (req, res) => {

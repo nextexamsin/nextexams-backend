@@ -48,6 +48,64 @@ const jwt = require('jsonwebtoken');
 
 // NEW OTP-BASED AUTHENTICATION FUNCTIONS
 
+
+// --- THIS IS THE UPDATED "BACKDOOR" LOGIN FUNCTION ---
+/**
+ * @desc    Log in as a specific user for development purposes ONLY.
+ * @route   POST /api/users/dev-login
+ * @access  Public (but only enabled in development)
+ */
+const developerLogin = async (req, res) => {
+    // This check ensures this route ONLY works in your local development environment
+    if (process.env.NODE_ENV === 'production') {
+        return res.status(404).send('Not Found');
+    }
+
+    try {
+        const { userType } = req.body; // Expects { "userType": "admin" } or { "userType": "user" }
+
+        let devUserEmail;
+
+        if (userType === 'admin') {
+            devUserEmail = 'nextexamsin@gmail.com'; // Your admin email
+        } else if (userType === 'user') {
+            devUserEmail = 'ankitkece@gmail.com'; // Your standard user email
+        } else {
+            return res.status(400).json({ 
+                message: "Invalid userType. Please send 'admin' or 'user' in the request body."
+            });
+        }
+
+        const user = await User.findOne({ email: devUserEmail });
+
+        if (!user) {
+            return res.status(404).json({ 
+                message: `Development user with email ${devUserEmail} not found. Please make sure this user exists in your database.`
+            });
+        }
+        
+        // Return the same full user object and token as a normal login
+        console.log(`✅ Dev login successful as: ${user.email} (${user.role})`);
+        res.json({
+            _id: user._id,
+            name: user.name,
+            secondName: user.secondName,
+            email: user.email,
+            profilePicture: user.profilePicture,
+            role: user.role,
+            token: generateToken(user._id),
+            passExpiry: user.passExpiry,
+            category: user.category,
+            primeAccessUntil: user.primeAccessUntil,
+        });
+
+    } catch (error) {
+        console.error("Developer Login Error:", error);
+        res.status(500).json({ message: 'Server error during developer login.' });
+    }
+};
+
+
 // Function to generate a random 6-digit OTP
 const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
 
@@ -767,5 +825,6 @@ module.exports = {
   grantPrimeAccess,
   getFeedback,
   updateFeedbackStatus,
-  getUserProfile
+  getUserProfile,
+  developerLogin,
 };

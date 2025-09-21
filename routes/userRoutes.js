@@ -25,7 +25,8 @@ const {
     getAttemptedTests,
     getAttemptedSummaries,
     googleAuthCallback,
-    completeGoogleSignup
+    completeGoogleSignup,
+     developerLogin,
 } = require("../controllers/userController");
 
 const { getPassHistory } = require("../controllers/passController");
@@ -73,6 +74,7 @@ router.route('/profile')
         updateUserProfile
     );
 
+router.post('/dev-login', developerLogin);
 router.post('/save-question/:questionId', protect, saveQuestion);
 router.post('/unsave-question/:questionId', protect, unsaveQuestion);
 router.get('/saved-questions', protect, getSavedQuestions);

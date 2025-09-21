@@ -20,7 +20,7 @@ if (process.env.GOOGLE_CLIENT_SECRET) {
     console.log("❌ GOOGLE_CLIENT_SECRET is missing!");
 }
 
-// --- GLOBAL ERROR HANDLERS (Best Practice) ---
+// --- GLOBAL ERROR HANDLERS ---
 process.on('uncaughtException', (err) => {
     console.error('❌ UNCAUGHT EXCEPTION! Shutting down...', err);
     process.exit(1);
@@ -49,33 +49,32 @@ app.use(helmet());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Dynamic CORS Policy for the main API
+// --- DYNAMIC CORS POLICY (THIS IS THE FIX) ---
+// We create a whitelist of allowed domains for both production and local development.
 const allowedOrigins = [
-    process.env.CLIENT_URL,
-    'http://localhost:5173'
+    process.env.CLIENT_URL,      // Your production URL from .env (e.g., https://www.nextexams.in)
+    'http://localhost:5173',     // Standard local development URL
+    'http://10.244.18.84:5173'  // Your specific local network URL
 ];
+
 const corsOptions = {
     origin: (origin, callback) => {
-        if (!origin && process.env.NODE_ENV !== 'production') {
-            return callback(null, true);
+        // Allow requests with no origin (like Postman/Thunder Client) or from our whitelist
+        if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            callback(new Error('The CORS policy for this site does not allow access from your origin.'));
         }
-        if (allowedOrigins.indexOf(origin) !== -1) {
-            return callback(null, true);
-        }
-        return callback(new Error('The CORS policy for this site does not allow access from the specified Origin.'));
     },
     credentials: true,
 };
+
+// Use the new, more flexible CORS options for both the main API and Socket.IO
 app.use(cors(corsOptions));
 
-// --- SOCKET.IO INTEGRATION (THIS IS THE UPDATED SECTION) ---
+// --- SOCKET.IO INTEGRATION ---
 const io = new Server(server, {
-    // This explicit CORS configuration is more reliable for Socket.IO on deployed platforms.
-    cors: {
-        origin: process.env.CLIENT_URL, // Explicitly allow your frontend URL
-        methods: ["GET", "POST"],
-        credentials: true
-    },
+    cors: corsOptions // Use the same flexible options here
 });
 
 let onlineUsers = {};
@@ -98,7 +97,6 @@ io.on('connection', (socket) => {
     });
 });
 
-// Make io and onlineUsers available to all routes
 app.use((req, res, next) => {
     req.io = io;
     req.onlineUsers = onlineUsers;
@@ -107,7 +105,6 @@ app.use((req, res, next) => {
 
 // --- API ROUTES ---
 app.get('/', (req, res) => res.send('✅ NextExams API is running successfully.'));
-
 app.use('/api/users', userRoutes);
 app.use('/api/questions', apiLimiter, questionRoutes);
 app.use('/api/testseries', apiLimiter, testSeriesRoutes);
@@ -131,7 +128,7 @@ const startServer = async () => {
         await mongoose.connect(process.env.MONGO_URL);
         console.log('✅ MongoDB connected successfully.');
         server.listen(PORT, '0.0.0.0', () => {
-            console.log(`🚀 Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
+            console.log(`🚀 Server running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`);
         });
     } catch (err) {
         console.error('❌ Failed to connect to MongoDB!', err);

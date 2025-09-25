@@ -45,7 +45,11 @@ const server = http.createServer(app);
 
 // --- SECURITY & MIDDLEWARE CONFIGURATION ---
 app.set('trust proxy', 1);
-app.use(helmet());
+app.use(
+  helmet({
+    contentSecurityPolicy: false, 
+  })
+);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 

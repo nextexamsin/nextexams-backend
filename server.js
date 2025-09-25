@@ -50,17 +50,21 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // --- DYNAMIC CORS POLICY (THIS IS THE FIX) ---
-// We create a whitelist of allowed domains for both production and local development.
 const allowedOrigins = [
-    process.env.CLIENT_URL,      // Your production URL from .env (e.g., https://www.nextexams.in)
-    'http://localhost:5173',     // Standard local development URL
-    'http://10.244.18.84:5173'  // Your specific local network URL
+    process.env.CLIENT_URL,      // Your production URL (e.g., https://www.nextexams.in)
+    'http://localhost:5173',       // Standard local development URL
+    'http://10.244.18.84:5173'    // Your specific local network URL
 ];
 
 const corsOptions = {
     origin: (origin, callback) => {
-        // Allow requests with no origin (like Postman/Thunder Client) or from our whitelist
-        if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+        // Allow requests with no origin (like Postman, mobile apps, etc.)
+        if (!origin) {
+            return callback(null, true);
+        }
+
+        // Check if the origin is in our static whitelist OR if it matches the Vercel preview URL pattern
+        if (allowedOrigins.includes(origin) || /nextexams-.*\.vercel\.app$/.test(origin)) {
             callback(null, true);
         } else {
             callback(new Error('The CORS policy for this site does not allow access from your origin.'));
@@ -71,6 +75,7 @@ const corsOptions = {
 
 // Use the new, more flexible CORS options for both the main API and Socket.IO
 app.use(cors(corsOptions));
+// --- END OF CORS FIX ---
 
 // --- SOCKET.IO INTEGRATION ---
 const io = new Server(server, {

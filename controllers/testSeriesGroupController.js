@@ -21,7 +21,7 @@ export const createTestSeriesGroup = async (req, res) => {
       const cloned = new TestSeries({
         ...rest,
         originalId: _id,
-        groupId: savedGroup._id // ✅ Add this line
+        groupId: savedGroup._id 
       });
 
       const savedClone = await cloned.save();
@@ -106,86 +106,88 @@ export const getAllTestSeriesGroups = async (req, res) => {
 
 // ✅ Corrected: Get group by ID
 export const getTestSeriesGroupById = async (req, res) => {
-  try {
-    const group = await TestSeriesGroup.findById(req.params.id).populate({
-      path: 'testSeries',
-      populate: { path: 'attempts.userId', select: '_id' },
-    });
+    try {
+        const group = await TestSeriesGroup.findById(req.params.id).populate({
+            path: 'testSeries',
+            populate: { path: 'attempts.userId', select: '_id' },
+        });
 
-    if (!group) {
-      return res.status(404).json({ error: 'Group not found' });
-    }
-
-    const userId = req.user?._id?.toString();
-    const validTests = group.testSeries.filter(test => test && test._id);
-
-    const groupWithUserStatus = {
-      ...group.toObject(),
-      testSeries: validTests.map(test => {
-        const testObj = test.toObject();
-        const userAttempts =
-          test.attempts?.filter(a => a.userId?._id?.toString() === userId) ||
-          [];
-
-        let status = 'not-started';
-        let mainAttemptId = null;
-        let attemptNumber = null;
-        let userPerformance = {};
-        let inProgressAttemptId = null;
-
-        if (userAttempts.length > 0) {
-          const inProgressAttempt = userAttempts.find(a => !a.isCompleted);
-          const latestCompletedAttempt = userAttempts
-            .filter(a => a.isCompleted)
-            .sort((a, b) => new Date(b.endedAt) - new Date(a.endedAt))[0];
-          
-          if (latestCompletedAttempt) {
-            status = 'completed';
-            mainAttemptId = latestCompletedAttempt._id;
-            attemptNumber = latestCompletedAttempt.attemptNumber;
-
-            // --- START: ADDED RANK CALCULATION LOGIC ---
-            const leaderboard = test.attempts
-              .filter(a => a.isCompleted && a.attemptNumber === latestCompletedAttempt.attemptNumber)
-              .sort((a, b) => (b.score || 0) - (a.score || 0));
-            
-            const totalUsersInAttempt = leaderboard.length;
-            const rankIndex = leaderboard.findIndex(u => u._id.equals(latestCompletedAttempt._id));
-            const userRank = rankIndex > -1 ? rankIndex + 1 : '-';
-            // --- END: ADDED RANK CALCULATION LOGIC ---
-
-            userPerformance = {
-              marks: latestCompletedAttempt.score,
-              rank: userRank, // Use the calculated rank
-              totalUsers: totalUsersInAttempt, // Send total users for the rank display
-            };
-          }
-
-          if (inProgressAttempt) {
-            inProgressAttemptId = inProgressAttempt._id;
-            if (!latestCompletedAttempt) {
-              status = 'in-progress';
-              mainAttemptId = inProgressAttempt._id;
-            }
-          }
+        if (!group) {
+            return res.status(404).json({ error: 'Group not found' });
         }
 
-        return {
-          ...testObj,
-          ...userPerformance,
-          status,
-          attemptId: mainAttemptId,
-          attemptNumber,
-          inProgressAttemptId,
-        };
-      }),
-    };
+        const userId = req.user?._id?.toString();
+        const validTests = group.testSeries.filter(test => test && test._id);
 
-    res.json(groupWithUserStatus);
-  } catch (err) {
-    console.error('Get TestSeriesGroup Error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
+        const groupWithUserStatus = {
+            ...group.toObject(),
+            testSeries: validTests.map(test => {
+                const testObj = test.toObject();
+                const userAttempts =
+                    test.attempts?.filter(a => a.userId?._id?.toString() === userId) ||
+                    [];
+
+                let status = 'not-started';
+                let mainAttemptId = null;
+                let attemptNumber = null;
+                let userPerformance = {};
+                let inProgressAttemptId = null;
+
+                if (userAttempts.length > 0) {
+                    const inProgressAttempt = userAttempts.find(a => !a.isCompleted);
+                    const latestCompletedAttempt = userAttempts
+                        .filter(a => a.isCompleted)
+                        .sort((a, b) => new Date(b.endedAt) - new Date(a.endedAt))[0];
+                    
+                    if (latestCompletedAttempt) {
+                        status = 'completed';
+                        mainAttemptId = latestCompletedAttempt._id;
+                        attemptNumber = latestCompletedAttempt.attemptNumber;
+
+                        const leaderboard = test.attempts
+                            .filter(a => a.isCompleted && a.attemptNumber === latestCompletedAttempt.attemptNumber)
+                            .sort((a, b) => (b.score || 0) - (a.score || 0));
+                        
+                        const totalUsersInAttempt = leaderboard.length;
+                        const rankIndex = leaderboard.findIndex(u => u._id.equals(latestCompletedAttempt._id));
+                        const userRank = rankIndex > -1 ? rankIndex + 1 : '-';
+
+                        // --- THIS IS THE FIX ---
+                        // We are now adding the correct `totalMarks` from the user's attempt
+                        // to the data we send to the frontend.
+                        userPerformance = {
+                            marks: latestCompletedAttempt.score,
+                            totalMarks: latestCompletedAttempt.totalMarks, 
+                            rank: userRank,
+                            totalUsers: totalUsersInAttempt,
+                        };
+                    }
+
+                    if (inProgressAttempt) {
+                        inProgressAttemptId = inProgressAttempt._id;
+                        if (!latestCompletedAttempt) {
+                            status = 'in-progress';
+                            mainAttemptId = inProgressAttempt._id;
+                        }
+                    }
+                }
+
+                return {
+                    ...testObj,
+                    ...userPerformance,
+                    status,
+                    attemptId: mainAttemptId,
+                    attemptNumber,
+                    inProgressAttemptId,
+                };
+            }),
+        };
+
+        res.json(groupWithUserStatus);
+    } catch (err) {
+        console.error('Get TestSeriesGroup Error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
 };
 
 

@@ -8,72 +8,75 @@ import calcScore from '../utils/calcScore.js';
 
 
 const detailedQuestionPopulation = {
-  path: 'sections.questions',
-  model: 'Question',
-  select: 'questionType correctAnswer answerMin answerMax marks negativeMarks'
+  path: 'sections.questions',
+  model: 'Question',
+  select: 'questionType correctAnswer answerMin answerMax marks negativeMarks'
 };
 
 // POST: Create a new Test Series
 export const createTestSeries = async (req, res) => {
-  try {
-    const { sections, testDurationInMinutes } = req.body;
+  try {
+    const { sections, testDurationInMinutes } = req.body;
 
-    if (!testDurationInMinutes && sections?.length > 0) {
-      req.body.testDurationInMinutes = sections.reduce((sum, sec) => {
-        return sum + (sec.durationInMinutes || 0);
-      }, 0);
-    }
+    if (!testDurationInMinutes && sections?.length > 0) {
+      req.body.testDurationInMinutes = sections.reduce((sum, sec) => {
+        return sum + (sec.durationInMinutes || 0);
+      }, 0);
+    }
 
-    const test = new TestSeries(req.body);
-    const savedTest = await test.save();
+    const test = new TestSeries(req.body);
 
-    const questionIds = savedTest.sections.flatMap(sec => sec.questions);
-    const sourceTag = `source_test_${savedTest._id}`;
+    // ✅ CHANGE: Calculate and set totalMarks before saving.
+    await test.populate('sections.questions');
+    const { total } = calcScore([], test);
+    test.totalMarks = total;
+    
+    const savedTest = await test.save();
 
-    await Question.updateMany(
-      { _id: { $in: questionIds } },
-      { $addToSet: { tags: sourceTag } }
-    );
-    
-    // --- START: NOTIFICATION LOGIC ---
-    try {
-      if (savedTest.status === 'Published') { // Only notify if the test is published
-        const message = `🚀 New Test Available: ${savedTest.title}`;
-        const link = `/tests/${savedTest._id}`; 
-        const allUsers = await User.find({ role: 'user' }, '_id'); // Notify only users, not admins
+    const questionIds = savedTest.sections.flatMap(sec => sec.questions);
+    const sourceTag = `source_test_${savedTest._id}`;
 
-       if (allUsers.length > 0) {
-    const notifications = allUsers.map(user => ({
-        user: user._id,
-        message,
-        link
-    }));
+    await Question.updateMany(
+      { _id: { $in: questionIds } },
+      { $addToSet: { tags: sourceTag } }
+    );
+    
+    // --- START: NOTIFICATION LOGIC ---
+    try {
+      if (savedTest.status === 'Published') { 
+        const message = `🚀 New Test Available: ${savedTest.title}`;
+        const link = `/tests/${savedTest._id}`; 
+        const allUsers = await User.find({ role: 'user' }, '_id'); 
 
-    await Notification.insertMany(notifications);
+       if (allUsers.length > 0) {
+        const notifications = allUsers.map(user => ({
+          user: user._id,
+          message,
+          link
+        }));
 
-    // Socket emissions still need to be in a loop
-    allUsers.forEach(user => {
-        const userSocketId = req.onlineUsers[user._id.toString()];
-        if (userSocketId) {
-            // You can emit a simplified object for real-time speed
-            req.io.to(userSocketId).emit("newNotification", { message, link });
-        }
-    });
-}
-      }
-    } catch (notificationError) {
-      console.error("Failed to send notifications:", notificationError);
-    }
-    // --- END: NOTIFICATION LOGIC ---
+        await Notification.insertMany(notifications);
 
-    res.status(201).json(savedTest);
-  } catch (err) {
-    console.error('Create TestSeries Error:', err.message);
-    res.status(400).json({ error: err.message });
-  }
+        allUsers.forEach(user => {
+          const userSocketId = req.onlineUsers[user._id.toString()];
+          if (userSocketId) {
+            req.io.to(userSocketId).emit("newNotification", { message, link });
+          }
+        });
+       }
+      }
+    } catch (notificationError) {
+      console.error("Failed to send notifications:", notificationError);
+    }
+    // --- END: NOTIFICATION LOGIC ---
+
+    res.status(201).json(savedTest);
+  } catch (err) {
+    console.error('Create TestSeries Error:', err.message);
+    res.status(400).json({ error: err.message });
+  }
 };
 
-// ✅ UPDATED FUNCTION: Replaces your old dynamic generator with the new, robust version.
 export const generateDynamicTestSeries = async (req, res) => {
     try {
         const { name: title, sections: sectionRules, ...testDetails } = req.body;
@@ -104,13 +107,10 @@ export const generateDynamicTestSeries = async (req, res) => {
                     const sourceTestId = sourceTag.replace('source_test_', '');
                     const sourceTest = await TestSeries.findById(sourceTestId).lean();
                     
-                    // ✅ BUG FIX: Check if the test and its sections exist.
                     if (sourceTest && Array.isArray(sourceTest.sections)) {
                         const sourceQuestionIds = sourceTest.sections.flatMap(sec => sec.questions);
                         query._id = { ...query._id, $in: sourceQuestionIds };
                     } else {
-                        // If source test not found or has no sections, no questions can match this rule.
-                        // We will let the count check below handle the error message.
                         query._id = { ...query._id, $in: [] }; 
                     }
                 }
@@ -153,6 +153,11 @@ export const generateDynamicTestSeries = async (req, res) => {
             createdBy: req.user._id, 
         });
         
+        // ✅ CHANGE: Calculate and set totalMarks before saving the dynamic test.
+        await newTestSeries.populate('sections.questions');
+        const { total } = calcScore([], newTestSeries);
+        newTestSeries.totalMarks = total;
+
         const savedTest = await newTestSeries.save();
         
         try {
@@ -183,48 +188,61 @@ export const generateDynamicTestSeries = async (req, res) => {
     }
 };
 
-
-// ... (All your other functions like getAllTestSeries, getTestSeriesById, updateTestSeries, etc., remain exactly the same below this line)
 // GET: All test series
 export const getAllTestSeries = async (req, res) => {
-  try {
-    const tests = await TestSeries.find().sort({ createdAt: -1 });
-    const uniqueTests = tests.filter((test, index, self) =>
-      index === self.findIndex(t => t._id.toString() === test._id.toString())
-    );
-    res.json(uniqueTests);
-  } catch (err) {
-    console.error('Get All TestSeries Error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
+  try {
+    const tests = await TestSeries.find().sort({ createdAt: -1 });
+    const uniqueTests = tests.filter((test, index, self) =>
+      index === self.findIndex(t => t._id.toString() === test._id.toString())
+    );
+    res.json(uniqueTests);
+  } catch (err) {
+    console.error('Get All TestSeries Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 };
 
 
 // GET: Single test series by ID
 export const getTestSeriesById = async (req, res) => {
-  try {
-    const test = await TestSeries.findById(req.params.id)
-      .populate('sections.questions', 'questionText questionImage options marks negativeMarks questionType')
-      .populate('attempts.userId', 'name email');
-    if (!test) return res.status(404).json({ error: 'TestSeries not found' });
-    res.json(test);
-  } catch (err) {
-    console.error('Get TestSeries By ID Error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
+  try {
+    const test = await TestSeries.findById(req.params.id)
+      .populate('sections.questions', 'questionText questionImage options marks negativeMarks questionType')
+      .populate('attempts.userId', 'name email');
+    if (!test) return res.status(404).json({ error: 'TestSeries not found' });
+    res.json(test);
+  } catch (err) {
+    console.error('Get TestSeries By ID Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 };
 
-// PUT: Update test series
+// ✅ CHANGE: Refactored update function to correctly calculate totalMarks upon update.
 export const updateTestSeries = async (req, res) => {
-  try {
-    const updated = await TestSeries.findByIdAndUpdate(req.params.id, req.body, { new: true });
-    if (!updated) return res.status(404).json({ error: 'TestSeries not found' });
-    res.json(updated);
-  } catch (err) {
-    console.error('Update TestSeries Error:', err.message);
-    res.status(400).json({ error: err.message });
-  }
+  try {
+    const testToUpdate = await TestSeries.findById(req.params.id);
+    if (!testToUpdate) {
+        return res.status(404).json({ error: 'TestSeries not found' });
+    }
+
+    // Apply the updates from the request body
+    Object.assign(testToUpdate, req.body);
+
+    // Recalculate and set totalMarks
+    await testToUpdate.populate('sections.questions');
+    const { total } = calcScore([], testToUpdate);
+    testToUpdate.totalMarks = total;
+    
+    const updatedTest = await testToUpdate.save();
+    res.json(updatedTest);
+
+  } catch (err) {
+    console.error('Update TestSeries Error:', err.message);
+    res.status(400).json({ error: err.message });
+  }
 };
+
+
 
 // DELETE: Delete test series
 // In testSeriesController.js

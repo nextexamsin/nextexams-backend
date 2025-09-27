@@ -1,3 +1,5 @@
+// models/testSeriesModel.js
+
 const mongoose = require('mongoose');
 
 // This sub-schema defines the complex, type-based marking scheme.
@@ -68,7 +70,6 @@ const testSeriesSchema = new mongoose.Schema({
   isPublished: { type: Boolean, default: false },
   isPaid: { type: Boolean, default: false },
   
-  // ✅ NEW: Field to categorize the test type
   testType: {
     type: String,
     enum: ['full-length', 'sectional', 'quiz'],
@@ -90,6 +91,10 @@ const testSeriesSchema = new mongoose.Schema({
     OBC: { type: Number, default: 0 }, SC: { type: Number, default: 0 },
     ST: { type: Number, default: 0 },
   },
+
+  // ✅ CHANGE: Added the totalMarks field to store the calculated value.
+  totalMarks: { type: Number, default: 0 },
+
   originalId: { type: mongoose.Schema.Types.ObjectId, ref: 'TestSeries' },
   groupId: { type: mongoose.Schema.Types.ObjectId, ref: 'TestSeriesGroup' },
 }, { timestamps: true });

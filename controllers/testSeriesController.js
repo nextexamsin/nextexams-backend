@@ -1,11 +1,12 @@
 // nextExams-backend/controllers/testSeriesController.js
 import mongoose from 'mongoose';
+import xlsx from 'xlsx';
 import Question from '../models/Question.js';
 import TestSeries from '../models/testSeriesModel.js';
+import TestSeriesGroup from '../models/testSeriesGroupModel.js'
 import User from '../models/User.js';
 import Notification from '../models/Notification.js';
 import calcScore from '../utils/calcScore.js';
-
 
 const detailedQuestionPopulation = {
   path: 'sections.questions',
@@ -13,71 +14,68 @@ const detailedQuestionPopulation = {
   select: 'questionType correctAnswer answerMin answerMax marks negativeMarks'
 };
 
-// POST: Create a new Test Series
+
 export const createTestSeries = async (req, res) => {
-  try {
-    const { sections, testDurationInMinutes } = req.body;
-
-    if (!testDurationInMinutes && sections?.length > 0) {
-      req.body.testDurationInMinutes = sections.reduce((sum, sec) => {
-        return sum + (sec.durationInMinutes || 0);
-      }, 0);
-    }
-
-    const test = new TestSeries(req.body);
-
-    // ✅ CHANGE: Calculate and set totalMarks before saving.
-    await test.populate('sections.questions');
-    const { total } = calcScore([], test);
-    test.totalMarks = total;
-    
-    const savedTest = await test.save();
-
-    const questionIds = savedTest.sections.flatMap(sec => sec.questions);
-    const sourceTag = `source_test_${savedTest._id}`;
-
-    await Question.updateMany(
-      { _id: { $in: questionIds } },
-      { $addToSet: { tags: sourceTag } }
-    );
-    
-    // --- START: NOTIFICATION LOGIC ---
     try {
-      if (savedTest.status === 'Published') { 
-        const message = `🚀 New Test Available: ${savedTest.title}`;
-        const link = `/tests/${savedTest._id}`; 
-        const allUsers = await User.find({ role: 'user' }, '_id'); 
+        const { sections, testDurationInMinutes } = req.body;
 
-       if (allUsers.length > 0) {
-        const notifications = allUsers.map(user => ({
-          user: user._id,
-          message,
-          link
-        }));
+        if (!testDurationInMinutes && sections?.length > 0) {
+            req.body.testDurationInMinutes = sections.reduce((sum, sec) => {
+                return sum + (Number(sec.durationInMinutes) || 0);
+            }, 0);
+        }
 
-        await Notification.insertMany(notifications);
+        const test = new TestSeries(req.body);
 
-        allUsers.forEach(user => {
-          const userSocketId = req.onlineUsers[user._id.toString()];
-          if (userSocketId) {
-            req.io.to(userSocketId).emit("newNotification", { message, link });
-          }
-        });
-       }
-      }
-    } catch (notificationError) {
-      console.error("Failed to send notifications:", notificationError);
+        await test.populate('sections.questions');
+        const { total } = calcScore([], test);
+        test.totalMarks = total;
+
+        const savedTest = await test.save();
+
+        const questionIds = savedTest.sections.flatMap(sec => sec.questions.map(q => q._id));
+        const sourceTag = `source_test_${savedTest._id}`;
+
+        await Question.updateMany(
+            { _id: { $in: questionIds } },
+            { $addToSet: { tags: sourceTag } }
+        );
+
+        // --- Notification Logic ---
+        try {
+            if (savedTest.isPublished) {
+                const message = `🚀 New Test Available: ${savedTest.title}`;
+                const link = `/tests/${savedTest._id}`;
+                const allUsers = await User.find({ role: 'user' }, '_id');
+
+                if (allUsers.length > 0) {
+                    const notifications = allUsers.map(user => ({
+                        user: user._id,
+                        message,
+                        link
+                    }));
+                    await Notification.insertMany(notifications);
+
+                    allUsers.forEach(user => {
+                        if (req.onlineUsers && req.onlineUsers[user._id.toString()]) {
+                           const userSocketId = req.onlineUsers[user._id.toString()];
+                           req.io.to(userSocketId).emit("newNotification", { message, link });
+                        }
+                    });
+                }
+            }
+        } catch (notificationError) {
+            console.error("Failed to send notifications:", notificationError);
+        }
+
+        res.status(201).json(savedTest);
+    } catch (err) {
+        console.error('Create TestSeries Error:', err.message, err.stack);
+        res.status(400).json({ error: err.message });
     }
-    // --- END: NOTIFICATION LOGIC ---
-
-    res.status(201).json(savedTest);
-  } catch (err) {
-    console.error('Create TestSeries Error:', err.message);
-    res.status(400).json({ error: err.message });
-  }
 };
 
-export const generateDynamicTestSeries = async (req, res) => {
+export  const generateDynamicTestSeries = async (req, res) => {
     try {
         const { name: title, sections: sectionRules, ...testDetails } = req.body;
 
@@ -153,13 +151,14 @@ export const generateDynamicTestSeries = async (req, res) => {
             createdBy: req.user._id, 
         });
         
-        // ✅ CHANGE: Calculate and set totalMarks before saving the dynamic test.
         await newTestSeries.populate('sections.questions');
         const { total } = calcScore([], newTestSeries);
         newTestSeries.totalMarks = total;
 
         const savedTest = await newTestSeries.save();
         
+        // --- Notification Logic ---
+        // (Can be refactored into a helper function to avoid repetition)
         try {
             if (savedTest.isPublished) {
                 const message = `🚀 New Test Available: ${savedTest.title}`;
@@ -169,9 +168,9 @@ export const generateDynamicTestSeries = async (req, res) => {
                     const notifications = allUsers.map(user => ({ user: user._id, message, link }));
                     await Notification.insertMany(notifications);
                     allUsers.forEach(user => {
-                        const userSocketId = req.onlineUsers[user._id.toString()];
-                        if (userSocketId) {
-                            req.io.to(userSocketId).emit("newNotification", { message, link });
+                         if (req.onlineUsers && req.onlineUsers[user._id.toString()]) {
+                           const userSocketId = req.onlineUsers[user._id.toString()];
+                           req.io.to(userSocketId).emit("newNotification", { message, link });
                         }
                     });
                 }
@@ -181,10 +180,104 @@ export const generateDynamicTestSeries = async (req, res) => {
         }
 
         res.status(201).json(savedTest);
-
     } catch (error) {
         console.error('Error generating dynamic test:', error);
         res.status(500).json({ error: error.message || 'Server error while generating test.' });
+    }
+};
+
+
+export const bulkUploadTestSeries = async (req, res) => {
+    const { groupId } = req.body; // Can be an empty string
+    if (!req.file) {
+        return res.status(400).json({ message: 'No Excel file uploaded.' });
+    }
+
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+        const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
+        const detailsSheet = workbook.Sheets['TestSeries_Details'];
+        const questionsSheet = workbook.Sheets['Questions'];
+        if (!detailsSheet || !questionsSheet) throw new Error("Excel file must contain 'TestSeries_Details' and 'Questions' sheets.");
+        
+        const testDetailsJSON = xlsx.utils.sheet_to_json(detailsSheet);
+        const questionsJSON = xlsx.utils.sheet_to_json(questionsSheet);
+
+        if (testDetailsJSON.length !== 1) throw new Error("'TestSeries_Details' sheet must have exactly one row of data.");
+        if (questionsJSON.length === 0) throw new Error("'Questions' sheet cannot be empty.");
+        
+        const details = testDetailsJSON[0];
+        
+        const questionsToCreate = questionsJSON.map(q => ({
+            questionText: q['Question Text'],
+            questionImage: q['Question Image'] || null,
+            questionType: q['Question Type']?.toLowerCase(),
+            options: ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'].map(opt => ({ label: opt, text: q[`Option ${opt}`] })).filter(opt => opt.text != null && String(opt.text).trim() !== ''),
+            correctAnswer: q['Correct Answer']?.toString().split(',').map(s => s.trim()),
+            explanation: q.Explanation,
+            exam: details['Exam'],
+            subject: q.Subject,
+            chapter: q.Chapter,
+            topic: q.Topic,
+            difficulty: q.Difficulty?.toLowerCase(),
+            // ✅ FIX #2: Add descriptive tags automatically
+            tags: [q.Subject, q.Chapter, q.Topic, q.Difficulty, details.Exam].filter(Boolean) // filter(Boolean) removes any empty/null values
+        }));
+        
+        const createdQuestionDocs = await Question.insertMany(questionsToCreate, { session });
+
+        const sectionsMap = new Map();
+        createdQuestionDocs.forEach((doc, index) => {
+            const sectionTitle = questionsJSON[index]['Section Title'];
+            if (!sectionsMap.has(sectionTitle)) sectionsMap.set(sectionTitle, []);
+            sectionsMap.get(sectionTitle).push(doc._id);
+        });
+
+        const finalSections = Array.from(sectionsMap.entries()).map(([title, questions]) => ({ title, questions }));
+
+        const newTest = new TestSeries({
+            title: details['Test Title'],
+            testType: details['Test Type']?.toLowerCase() || 'full-length',
+            exam: details['Exam'],
+            description: details['Description'],
+            testDurationInMinutes: details['Duration (Mins)'] || null,
+            allowSectionJump: details['Allow Section Jump']?.toUpperCase() === 'YES',
+            isPaid: details['Is Paid?']?.toUpperCase() === 'YES',
+            isPublished: details['Is Published?']?.toUpperCase() === 'YES',
+            releaseDate: details['Release Date'] ? new Date(details['Release Date']) : null,
+            sections: finalSections,
+            groupId: groupId || null, // Assign groupId if it exists
+        });
+        
+        const tempTestForCalc = { ...newTest.toObject(), sections: newTest.sections.map(sec => ({...sec, questions: sec.questions.map(qId => createdQuestionDocs.find(doc => doc._id.equals(qId))) })) };
+        const { total } = calcScore([], tempTestForCalc);
+        newTest.totalMarks = total;
+
+        const savedTest = await newTest.save({ session });
+        
+        const sourceTag = `source_test_${savedTest._id}`;
+        const questionIdsToTag = createdQuestionDocs.map(q => q._id);
+        await Question.updateMany({ _id: { $in: questionIdsToTag } }, { $addToSet: { tags: sourceTag } }, { session });
+
+        // ✅ FIX #1: If a group was selected, add this test to the group's list
+        if (groupId) {
+            await TestSeriesGroup.updateOne(
+                { _id: groupId },
+                { $addToSet: { testSeries: savedTest._id } },
+                { session }
+            );
+        }
+
+        await session.commitTransaction();
+        res.status(201).json({ message: `Test "${savedTest.title}" uploaded successfully!`, test: savedTest });
+    } catch (error) {
+        await session.abortTransaction();
+        console.error('Bulk Upload Error:', error);
+        res.status(500).json({ message: error.message || 'An error occurred during the upload.' });
+    } finally {
+        session.endSession();
     }
 };
 
@@ -977,3 +1070,8 @@ export const getRankDistribution = async (req, res) => {
         console.error('Get Rank Distribution Error:', err.message);
         res.status(500).json({ error: 'Server error while fetching rank distribution' });
     }};
+
+
+
+
+

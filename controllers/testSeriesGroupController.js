@@ -4,33 +4,19 @@ import TestSeries from '../models/testSeriesModel.js';
 // Create new group
 export const createTestSeriesGroup = async (req, res) => {
   try {
+    // Get all the data from the request, including the array of original test IDs
     const { name, description, imageUrl, testSeries } = req.body;
 
-    const newGroup = new TestSeriesGroup({ name, description, imageUrl });
+    // Create the new group and directly assign the array of original test series IDs
+    const newGroup = new TestSeriesGroup({
+      name,
+      description,
+      imageUrl,
+      testSeries: testSeries, // Assign the original IDs directly
+    });
+
+    // Save the new group with the correct references
     const savedGroup = await newGroup.save();
-
-    const clonedTestSeriesIds = [];
-
-    for (const tsId of testSeries) {
-      const original = await TestSeries.findById(tsId).lean();
-      if (!original) continue;
-
-      // Remove _id, timestamps, and attempts before cloning
-      const { _id, attempts, createdAt, updatedAt, ...rest } = original;
-
-      const cloned = new TestSeries({
-        ...rest,
-        originalId: _id,
-        groupId: savedGroup._id 
-      });
-
-      const savedClone = await cloned.save();
-      clonedTestSeriesIds.push(savedClone._id);
-    }
-
-    // Update the group with cloned test series
-    savedGroup.testSeries = clonedTestSeriesIds;
-    await savedGroup.save();
 
     res.status(201).json(savedGroup);
   } catch (err) {
@@ -38,7 +24,6 @@ export const createTestSeriesGroup = async (req, res) => {
     res.status(400).json({ error: err.message });
   }
 };
-
 
 
 // Get all groups

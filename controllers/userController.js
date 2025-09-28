@@ -765,42 +765,160 @@ const updateFeedbackStatus = async (req, res) => {
 
 const getUserProfile = async (req, res) => {
     try {
-        const userId = req.user._id;
-        const user = await User.findById(userId).lean();
+        const user = await User.findById(req.user._id).lean();
 
         if (!user) {
             return res.status(404).json({ message: 'User not found' });
         }
 
-        const attempted = await TestSeries.aggregate([
-            { $unwind: "$attempts" },
-            { $match: { "attempts.userId": new mongoose.Types.ObjectId(userId) } },
-            { $group: { _id: null, total: { $sum: 1 }, completed: { $sum: { $cond: [{ $eq: ["$attempts.isCompleted", true] }, 1, 0] } }, inProgress: { $sum: { $cond: [{ $eq: ["$attempts.isCompleted", false] }, 1, 0] } } } },
-        ]);
-        const stats = attempted[0] || { total: 0, completed: 0, inProgress: 0 };
-
-        // --- FIX #2: Ensure profilePicture is always sent ---
+        // We no longer need the 'stats' object
         res.json({
             _id: user._id,
             name: user.name,
             secondName: user.secondName || '',
             email: user.email,
-            profilePicture: user.profilePicture, // This will now have a value
+            profilePicture: user.profilePicture,
             role: user.role,
             primeAccessUntil: user.primeAccessUntil,
             passExpiry: user.passExpiry,
             category: user.category || 'UR',
-            stats: {
-                total: stats.total,
-                completed: stats.completed,
-                inProgress: stats.inProgress
-            }
         });
     } catch (error) {
         console.error("Get Profile Error:", error);
         res.status(500).json({ message: "Server error while fetching user profile." });
     }
 };
+
+
+const getUserAnalytics = async (req, res) => {
+    try {
+        const userId = req.user._id;
+
+        // Query 1: Get all COMPLETED attempts and their associated data
+        const testsWithCompletedAttempts = await TestSeries.find({
+            'attempts.userId': userId,
+            'attempts.isCompleted': true
+        })
+        .populate({
+            path: 'sections.questions',
+            model: 'Question',
+            select: 'subject topic correctOptions'
+        })
+        .lean();
+        
+        // --- FIX 1: Add a new query to count in-progress tests ---
+        const inProgressCount = await TestSeries.countDocuments({
+            'attempts.userId': userId,
+            'attempts.isCompleted': false
+        });
+
+        // If there are no attempts at all, return a default empty state
+        if (testsWithCompletedAttempts.length === 0 && inProgressCount === 0) {
+            return res.json({
+                overallStats: { totalTestsAttempted: 0, completedTests: 0, inProgressTests: 0, averageScore: 0, overallAccuracy: 0 },
+                performanceTrend: [],
+                subjectWisePerformance: [],
+                topicWisePerformance: [],
+            });
+        }
+
+        let completedAttempts = [];
+        testsWithCompletedAttempts.forEach(test => {
+            test.attempts.forEach(attempt => {
+                if (attempt.isCompleted && String(attempt.userId) === String(userId)) {
+                    completedAttempts.push({
+                        ...attempt,
+                        testName: test.title,
+                        questionsData: test.sections.flatMap(s => s.questions)
+                    });
+                }
+            });
+        });
+        
+        // --- FIX 2: Correctly calculate all stats ---
+        const completedTestsCount = completedAttempts.length;
+        const totalTestsAttempted = completedTestsCount + inProgressCount;
+        
+        const totalScore = completedAttempts.reduce((sum, a) => sum + (a.score || 0), 0);
+        const totalPossibleMarks = completedAttempts.reduce((sum, a) => sum + (a.totalMarks || 0), 0);
+        const overallAccuracy = totalPossibleMarks > 0 ? (totalScore / totalPossibleMarks) * 100 : 0;
+
+        const overallStats = {
+            totalTestsAttempted,
+            completedTests: completedTestsCount,
+            inProgressTests: inProgressCount,
+            averageScore: completedTestsCount > 0 ? (totalScore / completedTestsCount) : 0,
+            overallAccuracy,
+        };
+
+        // --- The rest of the function remains the same ---
+        const performanceTrend = completedAttempts
+            .sort((a, b) => new Date(b.endedAt) - new Date(a.endedAt))
+            .slice(0, 10)
+            .map(a => ({
+                testName: a.testName,
+                score: a.score || 0,
+                accuracy: a.totalMarks > 0 ? ((a.score || 0) / a.totalMarks) * 100 : 0,
+                endedAt: a.endedAt
+            }))
+            .reverse();
+
+        const performanceBySubject = {};
+        const performanceByTopic = {};
+
+        completedAttempts.forEach(attempt => {
+            (attempt.answers || []).forEach(answer => {
+                const question = (attempt.questionsData || []).find(q => q && String(q._id) === String(answer.questionId));
+                if (!question || !question.subject || !question.topic) return;
+
+                const subject = question.subject;
+                const topic = question.topic;
+                
+                const correct = (question.correctOptions ?? []).sort();
+                const selected = (answer.selectedOptions || []).sort();
+                const isCorrect = correct.length === selected.length && correct.every((value, index) => value === selected[index]);
+
+                if (!performanceBySubject[subject]) performanceBySubject[subject] = { correct: 0, total: 0 };
+                if (!performanceByTopic[topic]) performanceByTopic[topic] = { correct: 0, total: 0, subject: subject };
+
+                performanceBySubject[subject].total++;
+                performanceByTopic[topic].total++;
+                if (isCorrect) {
+                    performanceBySubject[subject].correct++;
+                    performanceByTopic[topic].correct++;
+                }
+            });
+        });
+        
+        const subjectWisePerformance = Object.entries(performanceBySubject).map(([subject, data]) => ({
+            subject,
+            accuracy: data.total > 0 ? (data.correct / data.total) * 100 : 0,
+            questionsAttempted: data.total,
+        })).sort((a, b) => b.accuracy - a.accuracy);
+
+        const topicWisePerformance = Object.entries(performanceByTopic).map(([topic, data]) => ({
+            topic,
+            subject: data.subject,
+            accuracy: data.total > 0 ? (data.correct / data.total) * 100 : 0,
+            correct: data.correct,
+            total: data.total,
+        })).sort((a, b) => a.accuracy - b.accuracy);
+
+        const analyticsData = {
+            overallStats,
+            performanceTrend,
+            subjectWisePerformance,
+            topicWisePerformance,
+        };
+
+        res.json(analyticsData);
+
+    } catch (err) {
+        console.error("Get User Analytics Error:", err);
+        res.status(500).json({ message: "Server error while fetching analytics." });
+    }
+};
+
 
 module.exports = {
   sendOtp,         
@@ -827,4 +945,5 @@ module.exports = {
   updateFeedbackStatus,
   getUserProfile,
   developerLogin,
+  getUserAnalytics,
 };

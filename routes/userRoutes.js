@@ -27,6 +27,7 @@ const {
     googleAuthCallback,
     completeGoogleSignup,
      developerLogin,
+     getUserAnalytics,
 } = require("../controllers/userController");
 
 const { getPassHistory } = require("../controllers/passController");
@@ -84,6 +85,7 @@ router.post('/unenroll/:groupId', protect, unenrollFromTestSeriesGroup);
 router.get('/attempted-tests', protect, getAttemptedTests);
 router.get('/attempted-tests-summary', protect, getAttemptedSummaries);
 router.get('/profile/pass-history', protect, getPassHistory);
+router.get('/analytics', protect, getUserAnalytics);
 
 module.exports = router;
 

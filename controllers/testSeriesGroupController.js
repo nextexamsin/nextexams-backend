@@ -4,9 +4,9 @@ import TestSeries from '../models/testSeriesModel.js';
 // Create new group
 export const createTestSeriesGroup = async (req, res) => {
   try {
-    const { name, description, testSeries } = req.body;
+    const { name, description, imageUrl, testSeries } = req.body;
 
-    const newGroup = new TestSeriesGroup({ name, description });
+    const newGroup = new TestSeriesGroup({ name, description, imageUrl });
     const savedGroup = await newGroup.save();
 
     const clonedTestSeriesIds = [];
@@ -82,12 +82,13 @@ export const getAllTestSeriesGroups = async (req, res) => {
           }
         }
       },
-      // Stage 4: Clean up the output to match your original structure
+      
       {
         $project: {
           name: 1,
           description: 1,
-          testSeries: '$testSeriesDetails', // Send the populated test series
+          imageUrl: 1,
+          testSeries: '$testSeriesDetails', 
           createdAt: 1,
           updatedAt: 1,
           freeCount: 1,

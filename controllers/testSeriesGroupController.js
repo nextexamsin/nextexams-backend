@@ -252,3 +252,24 @@ export const getRecentTestSeriesGroups = async (req, res) => {
     res.status(500).json({ error: 'Failed to load recent groups' });
   }
 };
+
+
+export const getPublishedGroupsWithTests = async (req, res) => {
+    try {
+        const groups = await TestSeriesGroup.find()
+            .populate({
+                path: 'testSeries',
+                match: { status: 'published' }, // This only includes tests that are 'published'
+                select: 'title description exam totalMarks isPaid status' // Selects only the fields needed for the list
+            })
+            .sort({ createdAt: -1 }); // Sorts the groups by most recently created
+
+        // This is a good practice: it removes any groups that have no published tests
+        const activeGroups = groups.filter(group => group.testSeries.length > 0);
+
+        res.json(activeGroups);
+    } catch (err) {
+        console.error('Error fetching published groups with tests:', err.message);
+        res.status(500).json({ message: 'Server error while fetching test groups.' });
+    }
+};

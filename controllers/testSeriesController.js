@@ -245,9 +245,10 @@ export const bulkUploadTestSeries = async (req, res) => {
             testDurationInMinutes: details['Duration (Mins)'] || null,
             allowSectionJump: details['Allow Section Jump']?.toUpperCase() === 'YES',
             isPaid: details['Is Paid?']?.toUpperCase() === 'YES',
-            isPublished: details['Is Published?']?.toUpperCase() === 'YES',
+            status: 'draft',
             releaseDate: details['Release Date'] ? new Date(details['Release Date']) : null,
             sections: finalSections,
+            status: 'draft',
             groupId: groupId || null, // Assign groupId if it exists
         });
         
@@ -281,33 +282,35 @@ export const bulkUploadTestSeries = async (req, res) => {
     }
 };
 
+
+
 // GET: All test series
 export const getAllTestSeries = async (req, res) => {
-  try {
-    const tests = await TestSeries.find().sort({ createdAt: -1 });
-    const uniqueTests = tests.filter((test, index, self) =>
-      index === self.findIndex(t => t._id.toString() === test._id.toString())
-    );
-    res.json(uniqueTests);
-  } catch (err) {
-    console.error('Get All TestSeries Error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
+    try {
+        // This should have NO status filter to ensure it returns everything for the admin panel
+        const tests = await TestSeries.find().sort({ createdAt: -1 });
+        res.json(tests);
+    } catch (err) {
+        console.error('Get All TestSeries Error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
 };
 
 
 // GET: Single test series by ID
 export const getTestSeriesById = async (req, res) => {
-  try {
-    const test = await TestSeries.findById(req.params.id)
-      .populate('sections.questions', 'questionText questionImage options marks negativeMarks questionType')
-      .populate('attempts.userId', 'name email');
-    if (!test) return res.status(404).json({ error: 'TestSeries not found' });
-    res.json(test);
-  } catch (err) {
-    console.error('Get TestSeries By ID Error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
+    try {
+        const test = await TestSeries.findById(req.params.id)
+            // ✅ FIX: Added correctAnswer and explanation to the selection
+            .populate('sections.questions', 'questionText questionImage options correctAnswer explanation questionType')
+            .populate('attempts.userId', 'name email');
+            
+        if (!test) return res.status(404).json({ error: 'TestSeries not found' });
+        res.json(test);
+    } catch (err) {
+        console.error('Get TestSeries By ID Error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
 };
 
 // ✅ CHANGE: Refactored update function to correctly calculate totalMarks upon update.
@@ -1073,5 +1076,37 @@ export const getRankDistribution = async (req, res) => {
 
 
 
+export const updateTestStatus = async (req, res) => {
+    const { status } = req.body;
+    // We now allow 'archived' as a valid status
+    if (!['draft', 'published', 'archived'].includes(status)) {
+        return res.status(400).json({ message: 'Invalid status provided.' });
+    }
 
+    try {
+        const test = await TestSeries.findById(req.params.id);
+        if (!test) {
+            return res.status(404).json({ message: 'Test not found' });
+        }
 
+        // --- SAFETY RULES ---
+        // Rule 1: A test that has attempts can never go back to 'draft'.
+        if (test.attempts && test.attempts.length > 0 && status === 'draft') {
+            return res.status(400).json({ message: 'A test that has been attempted cannot be moved back to draft.' });
+        }
+        
+        // Rule 2: An archived test is locked and cannot be changed.
+        if (test.status === 'archived') {
+            return res.status(400).json({ message: 'Archived tests are locked and their status cannot be changed.' });
+        }
+        
+        test.status = status;
+        await test.save();
+
+        // Optional: Add notification logic here if a test is published
+        
+        res.json({ message: `Test status updated to '${status}'` });
+    } catch (error) {
+        res.status(500).json({ message: 'Server error while updating status.' });
+    }
+};

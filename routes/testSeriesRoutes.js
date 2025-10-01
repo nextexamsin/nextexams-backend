@@ -20,7 +20,8 @@ const {
     getSolutionForTest,
     getLatestAttemptSummaries,
     generateDynamicTestSeries,
-    bulkUploadTestSeries, // 👈 2. Import the new controller function
+    bulkUploadTestSeries,
+    updateTestStatus, 
 } = require('../controllers/testSeriesController');
 
 const { protect, adminOnly } = require('../middleware/authMiddleware');
@@ -31,6 +32,7 @@ const upload = multer({ storage: multer.memoryStorage() }); // 👈 3. Initializ
 // --- Admin-Only Routes ---
 router.post('/', protect, adminOnly, createTestSeries);
 router.post('/generate-dynamic', protect, adminOnly, generateDynamicTestSeries);
+router.put('/:id/status', protect, adminOnly, updateTestStatus);
 
 // 👇 4. Add the new bulk upload route here
 router.post(

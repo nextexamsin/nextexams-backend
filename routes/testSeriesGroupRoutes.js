@@ -9,6 +9,7 @@ const {
   deleteTestSeriesGroup,
   getFullTestSeriesGroups,
   getRecentTestSeriesGroups,
+  getPublishedGroupsWithTests,
 } = require('../controllers/testSeriesGroupController');
 
 const { protect, adminOnly } = require('../middleware/authMiddleware'); // ✅ import protect
@@ -20,5 +21,6 @@ router.get('/recent', protect, getRecentTestSeriesGroups);
 router.get('/:id', protect, getTestSeriesGroupById); // ✅ protect this route!
 router.put('/:id', protect, adminOnly, updateTestSeriesGroup);
 router.delete('/:id', protect, adminOnly, deleteTestSeriesGroup);
+router.get('/published', getPublishedGroupsWithTests);
 
 module.exports = router;

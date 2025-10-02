@@ -10,16 +10,6 @@ const { Server } = require('socket.io');
 // --- LOAD ENVIRONMENT VARIABLES ---
 dotenv.config();
 
-// --- STARTUP LOGS FOR VERIFICATION ---
-console.log("✅ NODE_ENV:", process.env.NODE_ENV || 'development');
-console.log("✅ CLIENT_URL:", process.env.CLIENT_URL);
-console.log("✅ GOOGLE_CLIENT_ID:", process.env.GOOGLE_CLIENT_ID);
-if (process.env.GOOGLE_CLIENT_SECRET) {
-    console.log("✅ GOOGLE_CLIENT_SECRET: [LOADED]");
-} else {
-    console.log("❌ GOOGLE_CLIENT_SECRET is missing!");
-}
-
 // --- GLOBAL ERROR HANDLERS ---
 process.on('uncaughtException', (err) => {
     console.error('❌ UNCAUGHT EXCEPTION! Shutting down...', err);
@@ -36,6 +26,8 @@ const bookRoutes = require('./routes/bookRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const feedbackRoutes = require('./routes/feedbackRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
+const blogRoutes = require('./routes/blogRoutes');
+const commentRoutes = require('./routes/commentRoutes');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware.js');
 const { apiLimiter } = require('./utils/rateLimiter');
 
@@ -47,27 +39,21 @@ const server = http.createServer(app);
 app.set('trust proxy', 1);
 app.use(
   helmet({
-    contentSecurityPolicy: false, 
+    contentSecurityPolicy: false,
   })
 );
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// --- DYNAMIC CORS POLICY (THIS IS THE FIX) ---
+// --- DYNAMIC CORS POLICY ---
 const allowedOrigins = [
-    process.env.CLIENT_URL,      // Your production URL (e.g., https://www.nextexams.in)
-    'http://localhost:5173',       // Standard local development URL
-    'http://10.244.18.84:5173'    // Your specific local network URL
+    process.env.CLIENT_URL,
+    'http://localhost:5173',
 ];
 
 const corsOptions = {
     origin: (origin, callback) => {
-        // Allow requests with no origin (like Postman, mobile apps, etc.)
-        if (!origin) {
-            return callback(null, true);
-        }
-
-        // Check if the origin is in our static whitelist OR if it matches the Vercel preview URL pattern
+        if (!origin) return callback(null, true);
         if (allowedOrigins.includes(origin) || /nextexams-.*\.vercel\.app$/.test(origin)) {
             callback(null, true);
         } else {
@@ -77,23 +63,15 @@ const corsOptions = {
     credentials: true,
 };
 
-// Use the new, more flexible CORS options for both the main API and Socket.IO
 app.use(cors(corsOptions));
-// --- END OF CORS FIX ---
 
 // --- SOCKET.IO INTEGRATION ---
-const io = new Server(server, {
-    cors: corsOptions // Use the same flexible options here
-});
+const io = new Server(server, { cors: corsOptions });
 
 let onlineUsers = {};
 io.on('connection', (socket) => {
-    console.log(`🔌 New client connected: ${socket.id}`);
     socket.on('addNewUser', (userId) => {
-        if (userId) {
-            onlineUsers[userId] = socket.id;
-            console.log('Active users:', Object.keys(onlineUsers).length);
-        }
+        if (userId) onlineUsers[userId] = socket.id;
     });
     socket.on('disconnect', () => {
         Object.keys(onlineUsers).forEach((userId) => {
@@ -101,8 +79,6 @@ io.on('connection', (socket) => {
                 delete onlineUsers[userId];
             }
         });
-        console.log(`🔌 Client disconnected: ${socket.id}`);
-        console.log('Active users:', Object.keys(onlineUsers).length);
     });
 });
 
@@ -123,7 +99,8 @@ app.use('/api/books', apiLimiter, bookRoutes);
 app.use('/api/admin', apiLimiter, adminRoutes);
 app.use('/api/feedback', apiLimiter, feedbackRoutes);
 app.use('/api/notifications', apiLimiter, notificationRoutes);
-
+app.use('/api/blog', apiLimiter, blogRoutes);
+app.use('/api/comments', commentRoutes);
 
 // --- CUSTOM ERROR HANDLING MIDDLEWARE ---
 app.use(notFound);
@@ -137,7 +114,7 @@ const startServer = async () => {
         await mongoose.connect(process.env.MONGO_URL);
         console.log('✅ MongoDB connected successfully.');
         server.listen(PORT, '0.0.0.0', () => {
-            console.log(`🚀 Server running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`);
+            console.log(`🚀 Server running on port ${PORT}`);
         });
     } catch (err) {
         console.error('❌ Failed to connect to MongoDB!', err);
@@ -147,7 +124,7 @@ const startServer = async () => {
 
 startServer();
 
-// Graceful shutdown for unhandled promise rejections
+// --- Graceful shutdown for unhandled promise rejections ---
 process.on('unhandledRejection', (err) => {
     console.error('❌ UNHANDLED REJECTION! Shutting down...', err);
     server.close(() => {

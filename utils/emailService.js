@@ -79,7 +79,7 @@ const providerBlueprints = [
 // (No changes below this line, your logic is perfect)
 const transporters = {};
 
-console.log('--- Initializing Email Providers ---');
+
 providerBlueprints.forEach(provider => {
     const isConfigured = provider.requiredEnv.every(envVar => process.env[envVar]);
     if (isConfigured) {
@@ -87,7 +87,7 @@ providerBlueprints.forEach(provider => {
             transporter: nodemailer.createTransport(provider.createConfig()),
             from: provider.from(),
         };
-        console.log(`✅ ${provider.name}: Configured and ready.`);
+       
     } else {
         console.log(`- ${provider.name}: Skipped (missing environment variables).`);
     }

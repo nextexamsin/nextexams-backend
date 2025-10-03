@@ -10,7 +10,8 @@ const {
   getPopularPosts,
   getAllCategories,
   searchPosts,
-  getRelatedPosts // Make sure this is imported from your controller
+  getRelatedPosts,
+  getPostByIdForAdmin, // Make sure this is imported from your controller
 } = require("../controllers/blogController");
 
 const { protect, adminOnly } = require("../middleware/authMiddleware");
@@ -25,6 +26,7 @@ router.get("/search", searchPosts);
 // These specific admin routes must also come before the general /:slug route
 router.post("/", protect, adminOnly, createPost);
 router.get("/all", protect, adminOnly, getAllPostsAsAdmin);
+router.get("/admin/:id", protect, adminOnly, getPostByIdForAdmin);
 router.put("/:id", protect, adminOnly, updatePost);
 router.delete("/:id", protect, adminOnly, deletePost);
 

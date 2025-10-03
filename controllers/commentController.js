@@ -14,7 +14,7 @@ const sanitizeConfig = {
 const getCommentsForPost = asyncHandler(async (req, res) => {
   // We only fetch comments that have been approved
   const comments = await Comment.find({ post: req.params.postId, status: 'approved' })
-    .populate('user', 'name')
+   .populate('user', 'name _id profilePicture')
     .sort({ createdAt: 'desc' });
 
   res.json(comments);
@@ -42,7 +42,7 @@ const createComment = asyncHandler(async (req, res) => {
   });
 
   const createdComment = await comment.save();
-  const populatedComment = await Comment.findById(createdComment._id).populate('user', 'name');
+ const populatedComment = await Comment.findById(createdComment._id).populate('user', 'name _id profilePicture');
 
   res.status(201).json(populatedComment);
 });

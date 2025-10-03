@@ -12,6 +12,7 @@ const {
   searchPosts,
   getRelatedPosts,
   getPostByIdForAdmin, // Make sure this is imported from your controller
+  getPostForPreview,
 } = require("../controllers/blogController");
 
 const { protect, adminOnly } = require("../middleware/authMiddleware");
@@ -27,6 +28,7 @@ router.get("/search", searchPosts);
 router.post("/", protect, adminOnly, createPost);
 router.get("/all", protect, adminOnly, getAllPostsAsAdmin);
 router.get("/admin/:id", protect, adminOnly, getPostByIdForAdmin);
+router.get("/preview/:id", protect, adminOnly, getPostForPreview);
 router.put("/:id", protect, adminOnly, updatePost);
 router.delete("/:id", protect, adminOnly, deletePost);
 

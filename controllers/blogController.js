@@ -147,6 +147,19 @@ const getPostByIdForAdmin = asyncHandler(async (req, res) => {
     }
 });
 
+
+const getPostForPreview = asyncHandler(async (req, res) => {
+    // This finds a post by its ID regardless of status, since it's an admin-only route
+    const post = await BlogPost.findById(req.params.id);
+
+    if (post) {
+        res.json(post);
+    } else {
+        res.status(404);
+        throw new Error('Post not found');
+    }
+});
+
 // --- CHANGED: Added getRelatedPosts to the export list ---
 module.exports = {
   getPublishedPosts,
@@ -159,5 +172,6 @@ module.exports = {
   getAllCategories,
   searchPosts,
   getRelatedPosts,
-  getPostByIdForAdmin
+  getPostByIdForAdmin,
+  getPostForPreview,
 };

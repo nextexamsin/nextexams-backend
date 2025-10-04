@@ -13,6 +13,7 @@ const {
   getRelatedPosts,
   getPostByIdForAdmin, // Make sure this is imported from your controller
   getPostForPreview,
+  getPostsByCategory,
 } = require("../controllers/blogController");
 
 const { protect, adminOnly } = require("../middleware/authMiddleware");
@@ -35,6 +36,7 @@ router.delete("/:id", protect, adminOnly, deletePost);
 // --- 🔓 Public Routes (Parameterized/General Paths Last) ---
 // IMPORTANT: Parameterized routes like /:slug must be defined last
 // so they don't accidentally catch specific paths like /all or /popular.
+router.get("/category/:slug", getPostsByCategory);
 router.get("/related/:slug", getRelatedPosts);
 router.get("/:slug", getPostBySlug);
 

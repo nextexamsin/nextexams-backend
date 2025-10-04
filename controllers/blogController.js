@@ -160,6 +160,18 @@ const getPostForPreview = asyncHandler(async (req, res) => {
     }
 });
 
+const getPostsByCategory = asyncHandler(async (req, res) => {
+    const categorySlug = req.params.slug.replace(/-/g, ' '); // a-b -> a b
+    
+    const posts = await BlogPost.find({ 
+        category: { $regex: categorySlug, $options: 'i' },
+        status: 'published',
+        isDeleted: false
+    }).sort({ publishedAt: -1 });
+
+    res.json({ posts });
+});
+
 // --- CHANGED: Added getRelatedPosts to the export list ---
 module.exports = {
   getPublishedPosts,
@@ -174,4 +186,5 @@ module.exports = {
   getRelatedPosts,
   getPostByIdForAdmin,
   getPostForPreview,
+  getPostsByCategory
 };

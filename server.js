@@ -6,21 +6,32 @@ const dotenv = require('dotenv');
 const helmet = require('helmet');
 const http = require('http');
 const { Server } = require('socket.io');
-
-// --- NEW --- Import Firebase Admin SDK
 const admin = require('firebase-admin');
 
 // --- LOAD ENVIRONMENT VARIABLES ---
 dotenv.config();
 
-
-// --- NEW --- Initialize Firebase Admin SDK
+// --- MODIFIED & CORRECTED: Initialize Firebase Admin SDK ---
 try {
-    const serviceAccount = require('./config/firebase-service-account.json'); // UPDATE THIS PATH if you placed it elsewhere
+    let serviceAccount;
+
+    // This logic checks if the app is running on a live server (like Render)
+    // where the credentials are set as an environment variable.
+    if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+        // On Render: Parse the credentials from the environment variable
+        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+        console.log('Initializing Firebase Admin SDK from environment variable...');
+    } else {
+        // On your Local Machine: Read the credentials from the local file
+        console.log('Initializing Firebase Admin SDK from local file...');
+        serviceAccount = require('./config/firebase-service-account.json');
+    }
+
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount)
     });
     console.log('✅ Firebase Admin SDK initialized successfully.');
+
 } catch (error) {
     console.error('❌ Failed to initialize Firebase Admin SDK!', error);
     process.exit(1);

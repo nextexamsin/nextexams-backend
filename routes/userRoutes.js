@@ -1,16 +1,14 @@
 const express = require("express");
 const router = express.Router();
 const { body } = require("express-validator");
-const { protect } = require("../middleware/authMiddleware");
+const { protect, protectFirebase } = require("../middleware/authMiddleware");
 
-// --- (CHANGE 1) REMOVE the old inline rate limiter ---
-// const rateLimit = require('express-rate-limit'); // No longer needed here
-// const otpLimiter = rateLimit({ ... }); // This is now handled centrally
 
-// --- (CHANGE 2) IMPORT the new authLimiter from our utils file ---
+
+
 const { authLimiter } = require("../utils/rateLimiter");
 
-// --- Controller Imports ---
+
 const {
     sendOtp,
     verifyOtpAndLogin,
@@ -28,6 +26,9 @@ const {
     completeGoogleSignup,
      developerLogin,
      getUserAnalytics,
+      authWithFirebasePhone,
+      sendLinkEmailOtp,
+      addContactInfo
 } = require("../controllers/userController");
 
 const { getPassHistory } = require("../controllers/passController");
@@ -57,6 +58,7 @@ router.post('/complete-google-signup', completeGoogleSignup);
 // APPLY the strict limiter to the Google callback as well to prevent abuse
 router.post('/auth/google/callback', authLimiter, googleAuthCallback);
 router.get('/auth/google/callback', authLimiter, googleAuthCallback);
+router.post('/auth/firebase-phone', authLimiter, protectFirebase, authWithFirebasePhone);
 
 
 // --- 🔐 Protected Routes (User must be logged in) ---
@@ -86,6 +88,8 @@ router.get('/attempted-tests', protect, getAttemptedTests);
 router.get('/attempted-tests-summary', protect, getAttemptedSummaries);
 router.get('/profile/pass-history', protect, getPassHistory);
 router.get('/analytics', protect, getUserAnalytics);
+router.post('/profile/send-link-email-otp', protect, sendLinkEmailOtp);
+router.patch('/profile/add-contact', protect, addContactInfo);
 
 module.exports = router;
 

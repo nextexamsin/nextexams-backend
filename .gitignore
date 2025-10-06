@@ -3,3 +3,8 @@ node_modules
 
 # Environment variables
 .env
+
+
+# Firebase Admin SDK credentials
+firebase-service-account.json
+config/firebase-service-account.json

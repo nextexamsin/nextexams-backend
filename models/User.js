@@ -6,9 +6,15 @@ const userSchema = new mongoose.Schema({
     email: { type: String, unique: true, required: true },
     profilePicture: { type: String },
 
+     firebaseUid: {
+        type: String,
+        unique: true,
+        sparse: true
+    },
+
     role: { type: String, enum: ['admin', 'user'], default: 'user' },
     passExpiry: { type: Date },
-    whatsapp: { type: String, unique: true },
+    whatsapp: { type: String, unique: true, sparse: true },
     countryCode: { type: String, default: "+91" },
     isBlocked: { type: Boolean, default: false },
     primeAccessUntil: { type: Date, default: null },
@@ -35,7 +41,7 @@ const userSchema = new mongoose.Schema({
     // Add authProvider to track how the user signed up
     authProvider: {
         type: String,
-        enum: ['email', 'google'],
+        enum: ['email', 'google', 'phone'],
         default: 'email'
     }
 });

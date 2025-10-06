@@ -2,6 +2,8 @@ const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const asyncHandler = require("express-async-handler");
 
+const admin = require('firebase-admin');
+
 const protect = asyncHandler(async (req, res, next) => {
   let token;
 
@@ -45,4 +47,32 @@ const adminOnly = (req, res, next) => {
   }
 };
 
-module.exports = { protect, adminOnly };
+const protectFirebase = asyncHandler(async (req, res, next) => {
+    let token;
+
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+        try {
+            token = req.headers.authorization.split(' ')[1];
+
+            // Verify the token using the Firebase Admin SDK
+            const decodedToken = await admin.auth().verifyIdToken(token);
+            
+            // Attach the decoded token's payload to the request object
+            // This payload contains uid, phone_number, etc.
+            req.user = decodedToken;
+            
+            next();
+        } catch (error) {
+            console.error('Firebase token verification error:', error);
+            res.status(401);
+            throw new Error('Not authorized, token failed');
+        }
+    }
+
+    if (!token) {
+        res.status(401);
+        throw new Error('Not authorized, no token');
+    }
+});
+
+module.exports = { protect, adminOnly, protectFirebase };

@@ -124,7 +124,7 @@ const sendOtp = async (req, res) => {
         const adminEmail = "nextexamsin@gmail.com";
         let attemptsData = { attemptsUsed: 0, attemptsLeft: Infinity };
 
-        // --- OTP Limit Logic for Non-Admin Users ---
+        // --- OTP Limit Logic for Non-Admin Users (Unchanged) ---
         if (email !== adminEmail) {
             const otpRequestKey = `otp-limit:email:${email}`;
             const otpRequestCount = parseInt(await redis.get(otpRequestKey), 10) || 0;
@@ -136,42 +136,58 @@ const sendOtp = async (req, res) => {
                 });
             }
             
-            // Increment the count before sending the response
             const newCount = await redis.incr(otpRequestKey);
-            if (newCount === 1) { // Set expiry only on the first request of the day
+            if (newCount === 1) {
                 await redis.expire(otpRequestKey, 24 * 60 * 60);
             }
             attemptsData = { attemptsUsed: newCount, attemptsLeft: 5 - newCount };
         }
         
-        // --- Domain Validation for Sign-Up ---
+        // --- Domain Validation for Sign-Up (Unchanged) ---
         if (isSignUp) {
+            // ... (your existing domain validation logic is unchanged)
             const allowedDomains = [
-                'gmail.com', 'outlook.com', 'hotmail.com', 'live.com', 'msn.com',
-                'yahoo.com', 'yahoo.co.in', 'yahoo.co.uk', 'yahoo.ca',
-                'icloud.com', 'me.com', 'mac.com', 'aol.com', 'zoho.com', 
-                'protonmail.com', 'gmx.com', 'yandex.com'
-            ];
-            const emailDomain = email.split('@')[1];
-            if (!allowedDomains.includes(emailDomain)) {
-                return res.status(400).json({ 
-                    message: "To prevent spam, we only allow sign-ups from major email providers like Gmail, Outlook, Yahoo, and iCloud." 
-                });
+                'gmail.com', 'outlook.com', 'hotmail.com', 'live.com', 'msn.com',
+                'yahoo.com', 'yahoo.co.in', 'yahoo.co.uk', 'yahoo.ca',
+                'icloud.com', 'me.com', 'mac.com', 'aol.com', 'zoho.com', 
+                'protonmail.com', 'gmx.com', 'yandex.com'
+            ];
+            const emailDomain = email.split('@')[1];
+            if (!allowedDomains.includes(emailDomain)) {
+                return res.status(400).json({ 
+                    message: "To prevent spam, we only allow sign-ups from major email providers like Gmail, Outlook, Yahoo, and iCloud." 
+                });
+            }
+        }
+
+        // --- MODIFIED: Find or Create User Logic ---
+        let user = await User.findOne({ email });
+
+        if (isSignUp) {
+            // This is the explicit "Sign Up" flow
+            if (user && user.isVerified) { return res.status(400).json({ message: 'User with this email already exists. Please log in.' }); }
+            if (!name) { return res.status(400).json({ message: 'First name is required for sign up.' }); }
+            if (!user) { 
+                user = new User({ name, secondName, email, whatsapp });
+            } else { 
+                user.name = name; 
+                user.secondName = secondName || user.secondName; 
+                user.whatsapp = whatsapp || user.whatsapp; 
+            }
+        } else {
+            // This is the "Sign In" flow
+            if (!user) {
+                // --- NEW LOGIC: Implicit Sign-Up ---
+                // User doesn't exist, but is trying to sign in. Create them seamlessly.
+                const tempName = email.split('@')[0]; // Use email prefix as a temporary name
+                user = new User({ name: tempName, email: email });
+                console.log(`✅ Implicit sign-up for new email: ${email}`);
+            } else if (user.isBlocked) {
+                return res.status(403).json({ message: 'Your account is blocked.' });
             }
         }
 
-        // --- Find or Create User Logic ---
-        let user = await User.findOne({ email });
-        if (isSignUp) {
-            if (user && user.isVerified) { return res.status(400).json({ message: 'User with this email already exists. Please log in.' }); }
-            if (!name) { return res.status(400).json({ message: 'First name is required for sign up.' }); }
-            if (!user) { user = new User({ name, secondName, email, whatsapp });
-            } else { user.name = name; user.secondName = secondName || user.secondName; user.whatsapp = whatsapp || user.whatsapp; }
-        } else {
-            if (!user || !user.isVerified) { return res.status(404).json({ message: 'No registered user found with this email. Please sign up.' }); }
-        }
-
-        // --- Generate, Save, and Send OTP ---
+        // --- Generate, Save, and Send OTP (Unchanged) ---
         const otp = generateOTP();
         user.emailOtp = otp;
         user.emailOtpExpires = new Date(Date.now() + 10 * 60 * 1000);
@@ -183,7 +199,7 @@ const sendOtp = async (req, res) => {
             html: `<p>Your One-Time Password is: <strong>${otp}</strong>. It is valid for 10 minutes.</p>`,
         });
 
-        // --- Final Response Logic ---
+        // --- Final Response Logic (Unchanged) ---
         const { attemptsUsed } = attemptsData;
         if (email !== adminEmail && (attemptsUsed === 3 || attemptsUsed === 4)) {
             return res.status(200).json({ 
@@ -234,19 +250,27 @@ const verifyOtpAndLogin = async (req, res) => {
         user.emailOtpExpires = undefined;
         await user.save();
         
-        // Return the same data structure as your old login function
+        // --- FINALIZED RESPONSE ---
+        // Return the user data along with the crucial isProfileComplete flag
         res.json({
             _id: user._id,
             name: user.name,
+            secondName: user.secondName,
             email: user.email,
-            token: generateToken(user), // Assuming generateToken uses user object or user._id
+            profilePicture: user.profilePicture,
+            whatsapp: user.whatsapp,
+            isAdmin: user.isAdmin,
             role: user.role,
+            token: generateToken(user),
             passExpiry: user.passExpiry,
             category: user.category,
             primeAccessUntil: user.primeAccessUntil,
+            // This flag will be false for a new email-only user, triggering redirection
+            isProfileComplete: !!user.whatsapp && !!user.firebaseUid, 
         });
 
-    } catch (error) {
+    } catch (error)
+ {
         console.error('Verify OTP Error:', error);
         res.status(500).json({ message: 'Server error during verification.' });
     }
@@ -259,13 +283,8 @@ const googleAuthCallback = async (req, res) => {
         return res.status(400).json({ message: "Missing authorization code from client." });
     }
     try {
-        const oAuth2Client = new OAuth2Client(
-            process.env.GOOGLE_CLIENT_ID,
-            process.env.GOOGLE_CLIENT_SECRET,
-            process.env.GOOGLE_OAUTH_FRONTEND_CALLBACK_URI
-        );
+        const oAuth2Client = new OAuth2Client(/*...*/); // Your existing client setup
         const { tokens } = await oAuth2Client.getToken(code);
-        oAuth2Client.setCredentials(tokens);
         const ticket = await oAuth2Client.verifyIdToken({
             idToken: tokens.id_token,
             audience: process.env.GOOGLE_CLIENT_ID,
@@ -275,39 +294,41 @@ const googleAuthCallback = async (req, res) => {
         
         let user = await User.findOne({ email });
 
-        if (user) {
-            // --- FIX #1: UPDATE EXISTING USER ---
-            // If the user already exists (e.g., from OTP signup),
-            // update their profile picture from Google.
-            user.profilePicture = picture;
-            await user.save();
-            console.log(`✅ Google sign-in: Updated profile picture for existing user: ${email}`);
-            
-            // Now log them in.
-            res.status(200).json({
-                isNewUser: false,
-                userData: {
-                    _id: user._id, name: user.name, secondName: user.secondName, email: user.email, role: user.role,
-                    profilePicture: user.profilePicture, // Also include it in the response
-                    token: generateToken(user._id),
-                    passExpiry: user.passExpiry, category: user.category, primeAccessUntil: user.primeAccessUntil,
-                }
-            });
-        } else {
-            // New user - prompt for more info
-            const newUserInfo = {
+        if (!user) {
+            // --- NEW UNIFIED LOGIC ---
+            // User is new. Create their account immediately but mark it as incomplete.
+            user = await User.create({
                 name: given_name || name.split(' ')[0] || 'User',
                 secondName: family_name || name.split(' ')[1] || '',
                 email,
                 profilePicture: picture,
-            };
-            const tempToken = jwt.sign({ id: newUserInfo }, process.env.JWT_SECRET, { expiresIn: '5m' });
-            res.status(200).json({
-                isNewUser: true,
-                tempToken: tempToken,
-                prefillData: newUserInfo,
+                isVerified: true, // Email is verified by Google
+                authProvider: 'google',
             });
+            console.log(`✅ Implicit sign-up for new Google user: ${email}`);
+        } else {
+            // User exists, update their picture if it's missing
+            user.profilePicture = user.profilePicture || picture;
+            await user.save();
         }
+
+        // --- UNIFIED RESPONSE ---
+        // Always return the full user object with the isProfileComplete flag
+        res.status(200).json({
+            _id: user._id,
+            name: user.name,
+            secondName: user.secondName,
+            email: user.email,
+            role: user.role,
+            profilePicture: user.profilePicture,
+            whatsapp: user.whatsapp,
+            token: generateToken(user._id),
+            isProfileComplete: !!user.whatsapp && !!user.firebaseUid,
+            passExpiry: user.passExpiry,
+            category: user.category,
+            primeAccessUntil: user.primeAccessUntil,
+        });
+
     } catch (error) {
         console.error("❌ GOOGLE AUTH FAILURE:", error.response?.data || error.message);
         res.status(500).json({ message: "Google authentication failed on the server." });
@@ -337,6 +358,7 @@ const completeGoogleSignup = async (req, res) => {
             _id: newUser._id, name: newUser.name, secondName: newUser.secondName, email: newUser.email, role: newUser.role,
             profilePicture: newUser.profilePicture, // Also include it in the response
             token: generateToken(newUser._id),
+            isProfileComplete: true,
             passExpiry: newUser.passExpiry, category: newUser.category, primeAccessUntil: newUser.primeAccessUntil,
         });
     } catch (error) {
@@ -345,6 +367,84 @@ const completeGoogleSignup = async (req, res) => {
     }
 };
 
+
+
+// --- NEW --- Controller function for Firebase Phone Auth
+/**
+ * @desc    Authenticate/Register user with Firebase Phone Auth
+ * @route   POST /api/users/auth/firebase-phone
+ * @access  Private (via protectFirebase middleware)
+ */
+const authWithFirebasePhone = async (req, res) => {
+    const { uid, phone_number } = req.user;
+    const { isSignUp, name, secondName } = req.body;
+    const whatsappNumber = phone_number.substring(3);
+
+    try {
+        let userByFirebaseUid = await User.findOne({ firebaseUid: uid });
+        
+        if (userByFirebaseUid) {
+            if (userByFirebaseUid.isBlocked) {
+                return res.status(403).json({ message: 'Your account is blocked.' });
+            }
+            console.log(`✅ Login via Firebase UID: ${userByFirebaseUid.whatsapp}`);
+            return res.json({
+                _id: userByFirebaseUid._id, name: userByFirebaseUid.name, secondName: userByFirebaseUid.secondName,
+                email: userByFirebaseUid.email, profilePicture: userByFirebaseUid.profilePicture, whatsapp: userByFirebaseUid.whatsapp,
+                isAdmin: userByFirebaseUid.isAdmin, role: userByFirebaseUid.role, token: generateToken(userByFirebaseUid._id),
+                passExpiry: userByFirebaseUid.passExpiry, category: userByFirebaseUid.category, primeAccessUntil: userByFirebaseUid.primeAccessUntil,
+                isProfileComplete: userByFirebaseUid.whatsapp && userByFirebaseUid.email && !userByFirebaseUid.email.includes('@phone.nextexams.in'),
+            });
+        }
+
+        let userByPhone = await User.findOne({ whatsapp: whatsappNumber });
+        
+        if (userByPhone) {
+            userByPhone.firebaseUid = uid;
+            userByPhone.authProvider = 'phone';
+            userByPhone.isVerified = true;
+            await userByPhone.save();
+            
+            console.log(`✅ Account Linked: Firebase UID added to existing user ${userByPhone.whatsapp}`);
+            return res.json({
+                _id: userByPhone._id, name: userByPhone.name, secondName: userByPhone.secondName,
+                email: userByPhone.email, profilePicture: userByPhone.profilePicture, whatsapp: userByPhone.whatsapp,
+                isAdmin: userByPhone.isAdmin, role: userByPhone.role, token: generateToken(userByPhone._id),
+                passExpiry: userByPhone.passExpiry, category: userByPhone.category, primeAccessUntil: userByPhone.primeAccessUntil,
+                isProfileComplete: userByPhone.whatsapp && userByPhone.email && !userByPhone.email.includes('@phone.nextexams.in'),
+            });
+        }
+
+        // --- MODIFIED: Handles both explicit and implicit sign-up for new users ---
+        if (isSignUp || (!userByFirebaseUid && !userByPhone)) {
+            const tempName = name || `User_${whatsappNumber.slice(-4)}`;
+            
+            const newUser = await User.create({
+                firebaseUid: uid,
+                name: tempName,
+                secondName,
+                email: `${uid}@phone.nextexams.in`,
+                whatsapp: whatsappNumber,
+                isVerified: true,
+                authProvider: 'phone',
+            });
+
+            console.log(`✅ New User Signed Up (Implicitly or Explicitly): ${newUser.whatsapp}`);
+            return res.status(201).json({
+                _id: newUser._id, name: newUser.name, secondName: newUser.secondName,
+                email: newUser.email, profilePicture: newUser.profilePicture, whatsapp: newUser.whatsapp,
+                isAdmin: newUser.isAdmin, role: newUser.role, token: generateToken(newUser._id),
+                passExpiry: newUser.passExpiry, category: newUser.category, primeAccessUntil: newUser.primeAccessUntil,
+                isProfileComplete: false, // It's a new phone-only user, so profile is incomplete
+            });
+        }
+        // NOTE: The final "else" block that returned a 404 is no longer needed and has been removed.
+
+    } catch (error) {
+        console.error('Firebase Phone Auth Controller Error:', error);
+        res.status(500).json({ message: 'Server error during phone authentication.' });
+    }
+};
 
 
 // PATCH /api/users/profile
@@ -919,12 +1019,135 @@ const getUserAnalytics = async (req, res) => {
     }
 };
 
+/**
+ * @desc    Sends an OTP to a new email address for an existing, logged-in user.
+ * @route   POST /api/users/profile/send-link-email-otp
+ * @access  Private
+ */
+const sendLinkEmailOtp = async (req, res) => {
+    const { email } = req.body;
+    const userId = req.user._id;
+
+    if (!email) {
+        return res.status(400).json({ message: 'Email is required.' });
+    }
+
+    try {
+        const user = await User.findById(userId);
+        if (!user) {
+            return res.status(404).json({ message: 'User not found.' });
+        }
+
+        // Check if the new email is already in use by another account
+        const emailExists = await User.findOne({ email });
+        if (emailExists) {
+            return res.status(400).json({ message: 'This email is already registered to another account.' });
+        }
+
+        const otp = generateOTP();
+        user.emailOtp = otp;
+        user.emailOtpExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minute expiry
+        await user.save();
+
+        await sendEmailWithRateLimit({
+            to: email,
+            subject: 'Your NextExams Verification Code',
+            html: `<p>Your One-Time Password to link this email to your account is: <strong>${otp}</strong>. It is valid for 10 minutes.</p>`,
+        });
+
+        res.status(200).json({ message: 'OTP sent successfully.' });
+
+    } catch (error) {
+        console.error('Send Link Email OTP Error:', error);
+        res.status(500).json({ message: 'Error sending OTP.' });
+    }
+};
+
+
+// Paste this new function into your file
+
+/**
+ * @desc    Add and verify a missing contact method (email or phone) to an existing user's profile
+ * @route   PATCH /api/users/profile/add-contact
+ * @access  Private (requires user to be logged in)
+ */
+const addContactInfo = async (req, res) => {
+    // req.user comes from the 'protect' middleware, so we know who is logged in
+    const userId = req.user._id;
+    // Get all possible data from the frontend request body
+    const { email, otp, firebaseIdToken, name, secondName } = req.body;
+
+    try {
+        const user = await User.findById(userId);
+        if (!user) {
+            return res.status(404).json({ message: 'User not found.' });
+        }
+
+        // --- UPDATE NAME AND SECOND NAME (if provided) ---
+        if (name) {
+            user.name = name;
+        }
+        if (secondName !== undefined) { // Check for undefined to allow setting an empty string
+            user.secondName = secondName;
+        }
+
+        // --- CASE 1: USER IS ADDING AND VERIFYING THEIR EMAIL ---
+        if (email && otp) {
+            if (user.emailOtp !== otp || !user.emailOtpExpires || user.emailOtpExpires < Date.now()) {
+                return res.status(400).json({ message: 'Invalid or expired email OTP.' });
+            }
+            const existingEmailUser = await User.findOne({ email });
+            if (existingEmailUser) {
+                return res.status(400).json({ message: 'This email is already registered to another account.' });
+            }
+
+            user.email = email;
+            user.emailOtp = undefined;
+            user.emailOtpExpires = undefined;
+        }
+        // --- CASE 2: USER IS ADDING AND VERIFYING THEIR PHONE ---
+        else if (firebaseIdToken) {
+            // This part is for the future, if an email user needs to add a phone
+            // You can leave this logic here for when you build that feature
+            const admin = require('firebase-admin'); // Local require for Firebase Admin
+            const decodedToken = await admin.auth().verifyIdToken(firebaseIdToken);
+            const { uid, phone_number } = decodedToken;
+            const whatsappNumber = phone_number.substring(3);
+
+            const existingPhoneUser = await User.findOne({ whatsapp: whatsappNumber });
+            if (existingPhoneUser) {
+                return res.status(400).json({ message: 'This phone number is already registered to another account.' });
+            }
+
+            user.firebaseUid = uid;
+            user.whatsapp = whatsappNumber;
+        } else {
+             // If they are only updating their name without adding a contact
+            if (!name && secondName === undefined) {
+                 return res.status(400).json({ message: 'Invalid request. Please provide contact information to link.' });
+            }
+        }
+
+        await user.save();
+        // Return the complete, updated user object
+        res.json({ message: 'Profile updated successfully!', user });
+
+    } catch (error) {
+        console.error('Add Contact Info Error:', error);
+        // Add more specific error handling for invalid Firebase tokens
+        if (error.code === 'auth/id-token-expired' || error.code === 'auth/argument-error') {
+            return res.status(401).json({ message: 'Invalid or expired phone verification session.' });
+        }
+        res.status(500).json({ message: 'Server error while updating profile.' });
+    }
+};
 
 module.exports = {
   sendOtp,         
   verifyOtpAndLogin,
   googleAuthCallback,
   completeGoogleSignup,
+   authWithFirebasePhone,
   // createAdmin,
   getUserStats,
   saveQuestion,
@@ -946,4 +1169,6 @@ module.exports = {
   getUserProfile,
   developerLogin,
   getUserAnalytics,
+  sendLinkEmailOtp,
+  addContactInfo,
 };

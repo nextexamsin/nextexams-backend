@@ -283,8 +283,23 @@ const googleAuthCallback = async (req, res) => {
         return res.status(400).json({ message: "Missing authorization code from client." });
     }
     try {
-        const oAuth2Client = new OAuth2Client(/*...*/); // Your existing client setup
+        // --- CORRECTED INITIALIZATION ---
+        // 1. Initialize the client with only the ID and Secret
+        const oAuth2Client = new OAuth2Client(
+            process.env.GOOGLE_CLIENT_ID,
+            process.env.GOOGLE_CLIENT_SECRET
+        );
+
+        // 2. Set the redirect URI on the client instance
+        oAuth2Client.setCredentials({
+            redirect_uri: process.env.GOOGLE_OAUTH_FRONTEND_CALLBACK_URI,
+        });
+        
+        // --- THE REST OF THE FUNCTION IS THE SAME ---
         const { tokens } = await oAuth2Client.getToken(code);
+        // Important: After getting tokens, set them for the next API call
+        oAuth2Client.setCredentials(tokens);
+
         const ticket = await oAuth2Client.verifyIdToken({
             idToken: tokens.id_token,
             audience: process.env.GOOGLE_CLIENT_ID,
@@ -295,25 +310,20 @@ const googleAuthCallback = async (req, res) => {
         let user = await User.findOne({ email });
 
         if (!user) {
-            // --- NEW UNIFIED LOGIC ---
-            // User is new. Create their account immediately but mark it as incomplete.
             user = await User.create({
                 name: given_name || name.split(' ')[0] || 'User',
                 secondName: family_name || name.split(' ')[1] || '',
                 email,
                 profilePicture: picture,
-                isVerified: true, // Email is verified by Google
+                isVerified: true,
                 authProvider: 'google',
             });
             console.log(`✅ Implicit sign-up for new Google user: ${email}`);
         } else {
-            // User exists, update their picture if it's missing
             user.profilePicture = user.profilePicture || picture;
             await user.save();
         }
 
-        // --- UNIFIED RESPONSE ---
-        // Always return the full user object with the isProfileComplete flag
         res.status(200).json({
             _id: user._id,
             name: user.name,
@@ -330,11 +340,11 @@ const googleAuthCallback = async (req, res) => {
         });
 
     } catch (error) {
-        console.error("❌ GOOGLE AUTH FAILURE:", error.response?.data || error.message);
+        // This log will now give us a much more specific error from Google if it fails
+        console.error("❌ GOOGLE AUTH FAILURE:", error.response?.data || error.message || error);
         res.status(500).json({ message: "Google authentication failed on the server." });
     }
 };
-
 
 
 

@@ -28,7 +28,9 @@ const {
      getUserAnalytics,
       authWithFirebasePhone,
       sendLinkEmailOtp,
-      addContactInfo
+      addContactInfo,
+      initiateContactChange,
+    verifyContactChange,
 } = require("../controllers/userController");
 
 const { getPassHistory } = require("../controllers/passController");
@@ -53,7 +55,6 @@ router.post(
     ],
     verifyOtpAndLogin
 );
-router.post('/complete-google-signup', completeGoogleSignup);
 
 // APPLY the strict limiter to the Google callback as well to prevent abuse
 router.post('/auth/google/callback', authLimiter, googleAuthCallback);
@@ -90,6 +91,8 @@ router.get('/profile/pass-history', protect, getPassHistory);
 router.get('/analytics', protect, getUserAnalytics);
 router.post('/profile/send-link-email-otp', protect, sendLinkEmailOtp);
 router.patch('/profile/add-contact', protect, addContactInfo);
+router.post('/profile/initiate-contact-change', protect, initiateContactChange);
+router.post('/profile/verify-contact-change', protect, verifyContactChange);
 
 module.exports = router;
 

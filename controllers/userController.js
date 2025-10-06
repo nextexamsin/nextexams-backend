@@ -337,35 +337,7 @@ const googleAuthCallback = async (req, res) => {
 
 
 
-const completeGoogleSignup = async (req, res) => {
-    const { tempToken, whatsapp } = req.body;
-    if (!tempToken || !whatsapp) {
-        return res.status(400).json({ message: 'Missing required information.' });
-    }
-    try {
-        const decoded = jwt.verify(tempToken, process.env.JWT_SECRET);
-        const { name, secondName, email, profilePicture } = decoded.id;
-        const existingUser = await User.findOne({ email });
-        if (existingUser) {
-            return res.status(400).json({ message: 'User with this email already exists.' });
-        }
-        const newUser = await User.create({
-            name, secondName, email, profilePicture, whatsapp,
-            isVerified: true, authProvider: 'google',
-        });
-        console.log("✅ New user successfully created via Google:", email);
-        res.status(201).json({
-            _id: newUser._id, name: newUser.name, secondName: newUser.secondName, email: newUser.email, role: newUser.role,
-            profilePicture: newUser.profilePicture, // Also include it in the response
-            token: generateToken(newUser._id),
-            isProfileComplete: true,
-            passExpiry: newUser.passExpiry, category: newUser.category, primeAccessUntil: newUser.primeAccessUntil,
-        });
-    } catch (error) {
-        console.error("❌ GOOGLE SIGNUP COMPLETION FAILED:", error);
-        res.status(500).json({ message: 'Failed to complete sign-up. Your session may have expired. Please try again.' });
-    }
-};
+
 
 
 
@@ -1142,11 +1114,127 @@ const addContactInfo = async (req, res) => {
     }
 };
 
+/**
+ * @desc    Initiates a change of a primary contact method (email or phone)
+ * @route   POST /api/users/profile/initiate-contact-change
+ * @access  Private
+ */
+const initiateContactChange = async (req, res) => {
+    const { changeType, newValue } = req.body; // changeType will be 'email' or 'phone'
+    const userId = req.user._id;
+
+    if (!changeType || !newValue) {
+        return res.status(400).json({ message: "Change type and new value are required." });
+    }
+
+    try {
+        // Check if the new email or phone is already in use by another account
+        const query = (changeType === 'email') ? { email: newValue } : { whatsapp: newValue };
+        const existingUser = await User.findOne(query);
+        if (existingUser && existingUser._id.toString() !== userId.toString()) {
+            return res.status(400).json({ message: `This ${changeType} is already associated with another account.` });
+        }
+
+        const user = await User.findById(userId);
+        const otp = generateOTP();
+
+        // Send OTP to the NEW contact method
+        if (changeType === 'email') {
+            await sendEmailWithRateLimit({
+                to: newValue,
+                subject: 'Verify Your New Email Address',
+                html: `<p>Your verification code to change your email is: <strong>${otp}</strong>.</p>`,
+            });
+        } else {
+            // Placeholder for sending SMS OTP via Firebase/Twilio etc.
+            // For now, we assume this is handled on the frontend for phone changes.
+            return res.status(501).json({ message: "Phone number changes are not yet implemented." });
+        }
+        
+        // Store the pending change on the user document
+        user.pendingContactChange = {
+            changeType,
+            newValue,
+            otp,
+            expires: new Date(Date.now() + 10 * 60 * 1000), // OTP expires in 10 minutes
+        };
+        await user.save();
+
+        res.json({ message: `Verification OTP has been sent to ${newValue}.` });
+
+    } catch (error) {
+        console.error("Initiate Contact Change Error:", error);
+        res.status(500).json({ message: "Server error while initiating change." });
+    }
+};
+
+
+/**
+ * @desc    Verifies an OTP to finalize a contact method change
+ * @route   POST /api/users/profile/verify-contact-change
+ * @access  Private
+ */
+const verifyContactChange = async (req, res) => {
+    const { otp } = req.body;
+    const userId = req.user._id;
+
+    if (!otp) {
+        return res.status(400).json({ message: "OTP is required." });
+    }
+
+    try {
+        const user = await User.findById(userId);
+
+        if (!user.pendingContactChange || !user.pendingContactChange.otp) {
+            return res.status(400).json({ message: "No pending change request found." });
+        }
+
+        const { changeType, newValue, expires } = user.pendingContactChange;
+
+        if (user.pendingContactChange.otp !== otp || expires < Date.now()) {
+            return res.status(400).json({ message: "Invalid or expired OTP." });
+        }
+
+        // Add the old value to history
+        user.contactHistory.push({
+            changeType,
+            oldValue: user[changeType], // user['email'] or user['whatsapp']
+        });
+
+        // Update the primary contact field
+        if (changeType === 'email') {
+            user.email = newValue;
+        } else if (changeType === 'phone') {
+            user.whatsapp = newValue;
+            // You might need to update firebaseUid here as well if the new number is verified via Firebase
+        }
+        
+        // Clear the pending change
+        user.pendingContactChange = undefined;
+        await user.save();
+
+        // Return the full, updated profile
+        res.json({ 
+            message: `${changeType.charAt(0).toUpperCase() + changeType.slice(1)} updated successfully.`,
+            profile: {
+                _id: user._id, name: user.name, secondName: user.secondName,
+                email: user.email, profilePicture: user.profilePicture, role: user.role,
+                primeAccessUntil: user.primeAccessUntil, passExpiry: user.passExpiry,
+                category: user.category,
+            }
+        });
+
+    } catch (error) {
+        console.error("Verify Contact Change Error:", error);
+        res.status(500).json({ message: "Server error while verifying change." });
+    }
+};
+
+
 module.exports = {
   sendOtp,         
   verifyOtpAndLogin,
   googleAuthCallback,
-  completeGoogleSignup,
    authWithFirebasePhone,
   // createAdmin,
   getUserStats,
@@ -1171,4 +1259,6 @@ module.exports = {
   getUserAnalytics,
   sendLinkEmailOtp,
   addContactInfo,
+  initiateContactChange,
+  verifyContactChange,
 };

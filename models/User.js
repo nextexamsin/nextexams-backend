@@ -38,6 +38,22 @@ const userSchema = new mongoose.Schema({
         type: Date,
         default: null
     },
+
+    pendingContactChange: {
+        changeType: { type: String, enum: ['email', 'phone'] },
+        newValue: { type: String },
+        otp: { type: String },
+        expires: { type: Date }
+    },
+
+    // Add this field to keep a history of old contact info
+    contactHistory: [{
+        changeType: { type: String, enum: ['email', 'phone'] },
+        oldValue: { type: String },
+        changedAt: { type: Date, default: Date.now }
+    }],
+
+    
     // Add authProvider to track how the user signed up
     authProvider: {
         type: String,

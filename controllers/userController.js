@@ -283,27 +283,22 @@ const googleAuthCallback = async (req, res) => {
         return res.status(400).json({ message: "Missing authorization code from client." });
     }
     try {
-        // --- CORRECTED INITIALIZATION ---
-        // 1. Initialize the client with only the ID and Secret
+        // --- FINAL CORRECTED INITIALIZATION ---
+        // The OAuth2Client must be created with all three parameters at once.
         const oAuth2Client = new OAuth2Client(
             process.env.GOOGLE_CLIENT_ID,
-            process.env.GOOGLE_CLIENT_SECRET
+            process.env.GOOGLE_CLIENT_SECRET,
+            process.env.GOOGLE_OAUTH_FRONTEND_CALLBACK_URI // Pass the redirect_uri here
         );
-
-        // 2. Set the redirect URI on the client instance
-        oAuth2Client.setCredentials({
-            redirect_uri: process.env.GOOGLE_OAUTH_FRONTEND_CALLBACK_URI,
-        });
         
-        // --- THE REST OF THE FUNCTION IS THE SAME ---
+        // --- The rest of the function continues as normal ---
         const { tokens } = await oAuth2Client.getToken(code);
-        // Important: After getting tokens, set them for the next API call
-        oAuth2Client.setCredentials(tokens);
-
+        
         const ticket = await oAuth2Client.verifyIdToken({
             idToken: tokens.id_token,
             audience: process.env.GOOGLE_CLIENT_ID,
         });
+
         const payload = ticket.getPayload();
         const { email, name, picture, given_name, family_name } = payload;
         
@@ -324,6 +319,7 @@ const googleAuthCallback = async (req, res) => {
             await user.save();
         }
 
+        // Return the unified response
         res.status(200).json({
             _id: user._id,
             name: user.name,
@@ -340,7 +336,6 @@ const googleAuthCallback = async (req, res) => {
         });
 
     } catch (error) {
-        // This log will now give us a much more specific error from Google if it fails
         console.error("❌ GOOGLE AUTH FAILURE:", error.response?.data || error.message || error);
         res.status(500).json({ message: "Google authentication failed on the server." });
     }

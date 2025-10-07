@@ -859,6 +859,7 @@ const getUserProfile = async (req, res) => {
             primeAccessUntil: user.primeAccessUntil,
             passExpiry: user.passExpiry,
             category: user.category || 'UR',
+            whatsapp: user.whatsapp || '',
         });
     } catch (error) {
         console.error("Get Profile Error:", error);

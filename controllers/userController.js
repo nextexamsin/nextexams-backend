@@ -1045,15 +1045,14 @@ const sendLinkEmailOtp = async (req, res) => {
 // Paste this new function into your file
 
 /**
- * @desc    Add and verify a missing contact method (email or phone) to an existing user's profile
+ * @desc    Add/verify a contact method (email/phone) or update name for an existing user's profile.
  * @route   PATCH /api/users/profile/add-contact
  * @access  Private (requires user to be logged in)
  */
 const addContactInfo = async (req, res) => {
-    // req.user comes from the 'protect' middleware, so we know who is logged in
     const userId = req.user._id;
-    // Get all possible data from the frontend request body
-    const { email, otp, whatsapp, name, secondName } = req.body;
+    // Destructure all possible fields from the request body
+    const { email, otp, whatsapp, name, secondName, firebaseIdToken } = req.body;
 
     try {
         const user = await User.findById(userId);
@@ -1061,54 +1060,55 @@ const addContactInfo = async (req, res) => {
             return res.status(404).json({ message: 'User not found.' });
         }
 
+        // --- UPDATE NAME (applies to all flows) ---
         if (name) user.name = name;
         if (secondName !== undefined) user.secondName = secondName;
 
-        // --- Logic for adding email remains the same ---
+        // --- FLOW 1: REAL EMAIL VERIFICATION ---
         if (email && otp) {
-            // ... (your existing email verification logic is unchanged)
-            user.email = email;
-            // ...
-        } 
-        // --- MODIFIED LOGIC FOR ADDING PHONE ---
-        else if (whatsapp) {
-            const existingPhoneUser = await User.findOne({ whatsapp });
-            if (existingPhoneUser) {
-                return res.status(400).json({ message: 'This phone number is already registered to another account.' });
+            if (user.emailOtp !== otp || !user.emailOtpExpires || user.emailOtpExpires < Date.now()) {
+                return res.status(400).json({ message: 'Invalid or expired email OTP.' });
             }
-            user.whatsapp = whatsapp;
-            user.isPhoneVerified = false; // Explicitly mark as unverified
-        }
-        // --- CASE 2: USER IS ADDING AND VERIFYING THEIR PHONE ---
+            const existingEmailUser = await User.findOne({ email });
+            if (existingEmailUser && existingEmailUser._id.toString() !== user._id.toString()) {
+                return res.status(400).json({ message: 'This email is already registered to another account.' });
+            }
+            user.email = email;
+            user.isVerified = true; // Mark email as verified
+            user.emailOtp = undefined;
+            user.emailOtpExpires = undefined;
+        } 
+        // --- FLOW 2: REAL PHONE VERIFICATION (For the future) ---
         else if (firebaseIdToken) {
-            // This part is for the future, if an email user needs to add a phone
-            // You can leave this logic here for when you build that feature
-            const admin = require('firebase-admin'); // Local require for Firebase Admin
+            const admin = require('firebase-admin');
             const decodedToken = await admin.auth().verifyIdToken(firebaseIdToken);
             const { uid, phone_number } = decodedToken;
             const whatsappNumber = phone_number.substring(3);
 
             const existingPhoneUser = await User.findOne({ whatsapp: whatsappNumber });
-            if (existingPhoneUser) {
+            if (existingPhoneUser && existingPhoneUser._id.toString() !== user._id.toString()) {
                 return res.status(400).json({ message: 'This phone number is already registered to another account.' });
             }
-
             user.firebaseUid = uid;
             user.whatsapp = whatsappNumber;
-        } else {
-             // If they are only updating their name without adding a contact
-            if (!name && secondName === undefined) {
-                 return res.status(400).json({ message: 'Invalid request. Please provide contact information to link.' });
+            user.isPhoneVerified = true; // Mark as verified
+        }
+        // --- FLOW 3: TEMPORARY UNVERIFIED PHONE ADD ---
+        else if (whatsapp) {
+            const existingPhoneUser = await User.findOne({ whatsapp });
+            if (existingPhoneUser && existingPhoneUser._id.toString() !== user._id.toString()) {
+                return res.status(400).json({ message: 'This phone number is already registered to another account.' });
             }
+            user.whatsapp = whatsapp;
+            user.isPhoneVerified = false; // Explicitly mark as unverified
         }
 
         await user.save();
-        // Return the complete, updated user object
+        // Return the complete, updated user object so the frontend can refresh its state
         res.json({ message: 'Profile updated successfully!', user });
 
     } catch (error) {
         console.error('Add Contact Info Error:', error);
-        // Add more specific error handling for invalid Firebase tokens
         if (error.code === 'auth/id-token-expired' || error.code === 'auth/argument-error') {
             return res.status(401).json({ message: 'Invalid or expired phone verification session.' });
         }

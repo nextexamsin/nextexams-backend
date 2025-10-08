@@ -266,7 +266,7 @@ const verifyOtpAndLogin = async (req, res) => {
             category: user.category,
             primeAccessUntil: user.primeAccessUntil,
             // This flag will be false for a new email-only user, triggering redirection
-            isProfileComplete: !!user.whatsapp && !!user.firebaseUid, 
+            isProfileComplete: !!user.whatsapp && !!user.email && !user.email.includes('@phone.nextexams.in'),
         });
 
     } catch (error)
@@ -329,7 +329,7 @@ const googleAuthCallback = async (req, res) => {
             profilePicture: user.profilePicture,
             whatsapp: user.whatsapp,
             token: generateToken(user._id),
-            isProfileComplete: !!user.whatsapp && !!user.firebaseUid,
+            isProfileComplete: !!user.whatsapp && !!user.email && !user.email.includes('@phone.nextexams.in'),
             passExpiry: user.passExpiry,
             category: user.category,
             primeAccessUntil: user.primeAccessUntil,

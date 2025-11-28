@@ -75,7 +75,7 @@ export const createTestSeries = async (req, res) => {
     }
 };
 
-export  const generateDynamicTestSeries = async (req, res) => {
+export const generateDynamicTestSeries = async (req, res) => {
     try {
         const { name: title, sections: sectionRules, ...testDetails } = req.body;
 
@@ -141,6 +141,8 @@ export  const generateDynamicTestSeries = async (req, res) => {
                 marksPerQuestion: section.marksPerQuestion,
                 negativeMarking: section.negativeMarking,
                 markingScheme: section.markingScheme,
+                // ✅ CRITICAL UPDATE: Save the languages configuration
+                languages: section.languages || ['en'] 
             });
         }
         
@@ -157,8 +159,7 @@ export  const generateDynamicTestSeries = async (req, res) => {
 
         const savedTest = await newTestSeries.save();
         
-        // --- Notification Logic ---
-        // (Can be refactored into a helper function to avoid repetition)
+        // Notification logic (kept same as your existing code)
         try {
             if (savedTest.isPublished) {
                 const message = `🚀 New Test Available: ${savedTest.title}`;
@@ -188,7 +189,7 @@ export  const generateDynamicTestSeries = async (req, res) => {
 
 
 export const bulkUploadTestSeries = async (req, res) => {
-    const { groupId } = req.body; // Can be an empty string
+    const { groupId } = req.body;
     if (!req.file) {
         return res.status(400).json({ message: 'No Excel file uploaded.' });
     }
@@ -210,27 +211,55 @@ export const bulkUploadTestSeries = async (req, res) => {
         
         const details = testDetailsJSON[0];
         
+        // Helper to safely get strings
+        const getVal = (row, key) => (row[key] !== undefined ? String(row[key]).trim() : '');
+
         const questionsToCreate = questionsJSON.map(q => ({
-            questionText: q['Question Text'],
-            questionImage: q['Question Image'] || null,
-            questionType: q['Question Type']?.toLowerCase(),
-            options: ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'].map(opt => ({ label: opt, text: q[`Option ${opt}`] })).filter(opt => opt.text != null && String(opt.text).trim() !== ''),
-            correctAnswer: q['Correct Answer']?.toString().split(',').map(s => s.trim()),
-            explanation: q.Explanation,
+            // ✅ Updated for Multilingual Structure
+            questionText: {
+                en: getVal(q, 'Question Text (English)') || getVal(q, 'Question Text'),
+                hi: getVal(q, 'Question Text (Hindi)') || ''
+            },
+            questionImage: getVal(q, 'Question Image') || null,
+            questionType: getVal(q, 'Question Type')?.toLowerCase() || 'mcq',
+            
+            // ✅ Updated Options for Multilingual
+            options: ['A', 'B', 'C', 'D', 'E'].map(opt => {
+                const textEn = getVal(q, `Option ${opt} (English)`) || getVal(q, `Option ${opt}`);
+                const textHi = getVal(q, `Option ${opt} (Hindi)`);
+                
+                if (!textEn) return null; // Skip if English text missing
+                
+                return { 
+                    label: opt, 
+                    text: { en: textEn, hi: textHi || '' } 
+                };
+            }).filter(Boolean), // Remove null options
+
+            correctAnswer: getVal(q, 'Correct Answer').split(',').map(s => s.trim()),
+            
+            // ✅ Updated Explanation
+            explanation: {
+                en: getVal(q, 'Explanation (English)') || getVal(q, 'Explanation'),
+                hi: getVal(q, 'Explanation (Hindi)') || ''
+            },
+
             exam: details['Exam'],
-            subject: q.Subject,
-            chapter: q.Chapter,
-            topic: q.Topic,
-            difficulty: q.Difficulty?.toLowerCase(),
-            // ✅ FIX #2: Add descriptive tags automatically
-            tags: [q.Subject, q.Chapter, q.Topic, q.Difficulty, details.Exam].filter(Boolean) // filter(Boolean) removes any empty/null values
+            subject: getVal(q, 'Subject'),
+            chapter: getVal(q, 'Chapter'),
+            topic: getVal(q, 'Topic'),
+            difficulty: getVal(q, 'Difficulty')?.toLowerCase() || 'medium',
+            answerMin: q['Answer Min (Numerical)'] || undefined,
+            answerMax: q['Answer Max (Numerical)'] || undefined,
+            
+            tags: [getVal(q, 'Subject'), getVal(q, 'Chapter'), details.Exam].filter(Boolean)
         }));
         
         const createdQuestionDocs = await Question.insertMany(questionsToCreate, { session });
 
         const sectionsMap = new Map();
         createdQuestionDocs.forEach((doc, index) => {
-            const sectionTitle = questionsJSON[index]['Section Title'];
+            const sectionTitle = questionsJSON[index]['Section Title'] || 'General Section';
             if (!sectionsMap.has(sectionTitle)) sectionsMap.set(sectionTitle, []);
             sectionsMap.get(sectionTitle).push(doc._id);
         });
@@ -248,10 +277,10 @@ export const bulkUploadTestSeries = async (req, res) => {
             status: 'draft',
             releaseDate: details['Release Date'] ? new Date(details['Release Date']) : null,
             sections: finalSections,
-            status: 'draft',
-            groupId: groupId || null, // Assign groupId if it exists
+            groupId: groupId || null,
         });
         
+        // Populate to calculate total marks
         const tempTestForCalc = { ...newTest.toObject(), sections: newTest.sections.map(sec => ({...sec, questions: sec.questions.map(qId => createdQuestionDocs.find(doc => doc._id.equals(qId))) })) };
         const { total } = calcScore([], tempTestForCalc);
         newTest.totalMarks = total;
@@ -262,7 +291,6 @@ export const bulkUploadTestSeries = async (req, res) => {
         const questionIdsToTag = createdQuestionDocs.map(q => q._id);
         await Question.updateMany({ _id: { $in: questionIdsToTag } }, { $addToSet: { tags: sourceTag } }, { session });
 
-        // ✅ FIX #1: If a group was selected, add this test to the group's list
         if (groupId) {
             await TestSeriesGroup.updateOne(
                 { _id: groupId },
@@ -1108,5 +1136,38 @@ export const updateTestStatus = async (req, res) => {
         res.json({ message: `Test status updated to '${status}'` });
     } catch (error) {
         res.status(500).json({ message: 'Server error while updating status.' });
+    }
+};
+
+
+export const getPublicTestsByGroupId = async (req, res) => {
+    try {
+        const { groupId } = req.params;
+        // Fetch only published tests, excluding sensitive fields
+        const tests = await TestSeries.find({ 
+            groupId: groupId, 
+            status: 'published' 
+        })
+        .select('title description exam testDurationInMinutes totalMarks isPaid releaseDate sections')
+        .lean();
+
+        if (!tests) return res.status(404).json({ message: "No tests found" });
+
+        const publicTests = tests.map(test => ({
+            _id: test._id,
+            title: test.title,
+            description: test.description,
+            exam: test.exam,
+            testDurationInMinutes: test.testDurationInMinutes,
+            totalMarks: test.totalMarks,
+            isPaid: test.isPaid,
+            releaseDate: test.releaseDate,
+            questionsCount: test.sections.reduce((acc, sec) => acc + (sec.questions?.length || 0), 0),
+            sectionCount: test.sections.length
+        }));
+
+        res.json(publicTests);
+    } catch (err) {
+        res.status(500).json({ message: 'Failed to load public tests.' });
     }
 };

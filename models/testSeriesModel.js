@@ -1,5 +1,3 @@
-// models/testSeriesModel.js
-
 const mongoose = require('mongoose');
 
 // This sub-schema defines the complex, type-based marking scheme.
@@ -33,6 +31,14 @@ const sectionSchema = new mongoose.Schema({
     marksPerQuestion: { type: Number, default: null },
     negativeMarking: { type: Number, default: null },
     markingScheme: { type: markingSchemeSchema, default: null },
+
+    // ✅ NEW: Languages allowed in this specific section
+    // If 'hi' is missing, questions will show in English only, even if Hindi exists.
+    languages: {
+        type: [String],
+        enum: ['en', 'hi'],
+        default: ['en'] 
+    }
 });
 
 const userAttemptSchema = new mongoose.Schema({
@@ -69,8 +75,6 @@ const testSeriesSchema = new mongoose.Schema({
     releaseDate: { type: Date },
     isPaid: { type: Boolean, default: false },
     
-    // ✅ CHANGE: Replaced 'isPublished' with a more flexible 'status' field.
-    // Every new test will now automatically be a 'draft'.
     status: {
         type: String,
         enum: ['draft', 'published', 'archived'],

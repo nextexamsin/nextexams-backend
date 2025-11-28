@@ -22,6 +22,7 @@ const {
     generateDynamicTestSeries,
     bulkUploadTestSeries,
     updateTestStatus, 
+    getPublicTestsByGroupId
 } = require('../controllers/testSeriesController');
 
 const { protect, adminOnly } = require('../middleware/authMiddleware');
@@ -52,6 +53,9 @@ router.get('/', getAllTestSeries);
 router.get('/recent', protect, getRecentTestSeriesForUser);
 router.get('/attempted-summary', protect, getLatestAttemptSummaries);
 router.post('/start', protect, startTestSecure);
+
+// ✅ NEW: Public Test List Route (No Auth)
+router.get('/public/group/:groupId', getPublicTestsByGroupId);
 
 // Routes with parameters
 router.get('/result/:attemptId', protect, getDetailedResult);

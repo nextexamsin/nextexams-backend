@@ -90,6 +90,9 @@ export const getAllTestSeriesGroups = async (req, res) => {
 };
 
 
+
+
+
 // ✅ Corrected: Get group by ID
 export const getTestSeriesGroupById = async (req, res) => {
     try {
@@ -271,5 +274,21 @@ export const getPublishedGroupsWithTests = async (req, res) => {
     } catch (err) {
         console.error('Error fetching published groups with tests:', err.message);
         res.status(500).json({ message: 'Server error while fetching test groups.' });
+    }
+};
+
+
+export const getPublicTestSeriesGroupById = async (req, res) => {
+    try {
+        // Just fetch group metadata. Tests are fetched via a separate public API.
+        const group = await TestSeriesGroup.findById(req.params.id).select('name description imageUrl examCategory');
+
+        if (!group) {
+            return res.status(404).json({ error: 'Group not found' });
+        }
+        res.json(group);
+    } catch (err) {
+        console.error('Get Public TestSeriesGroup Error:', err.message);
+        res.status(500).json({ error: err.message });
     }
 };

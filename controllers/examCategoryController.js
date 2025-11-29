@@ -1,9 +1,22 @@
 const ExamCategory = require('../models/ExamCategory');
 
+const createSlug = (name) => {
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/[^\w\s-]/g, '') // Remove special chars
+    .replace(/[\s_-]+/g, '-') // Replace spaces with hyphens
+    .replace(/^-+|-+$/g, ''); // Remove leading/trailing hyphens
+};
+
 // Create
 exports.createCategory = async (req, res) => {
   try {
-    const category = new ExamCategory(req.body);
+    const slug = createSlug(req.body.name);
+    const category = new ExamCategory({
+        ...req.body,
+        slug: slug
+    });
     const saved = await category.save();
     res.status(201).json(saved);
   } catch (err) {
@@ -37,7 +50,16 @@ exports.getCategoryById = async (req, res) => {
 // Update
 exports.updateCategory = async (req, res) => {
   try {
-    const updated = await ExamCategory.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    const updateData = { ...req.body };
+    
+    // ✅ If name changes, update slug
+    if (updateData.name) {
+        updateData.slug = createSlug(updateData.name);
+    }
+
+    // ✅ FIX: Use 'updateData' here, NOT 'req.body'
+    const updated = await ExamCategory.findByIdAndUpdate(req.params.id, updateData, { new: true });
+    
     res.json(updated);
   } catch (err) {
     res.status(400).json({ error: err.message });

@@ -5,7 +5,7 @@ import TestSeries from '../models/testSeriesModel.js';
 export const createTestSeriesGroup = async (req, res) => {
   try {
     // Get all the data from the request, including the array of original test IDs
-    const { name, description, imageUrl, testSeries } = req.body;
+    const { name, description, imageUrl, testSeries, tags } = req.body;
 
     // Create the new group and directly assign the array of original test series IDs
     const newGroup = new TestSeriesGroup({
@@ -73,6 +73,7 @@ export const getAllTestSeriesGroups = async (req, res) => {
           name: 1,
           description: 1,
           imageUrl: 1,
+          tags: 1,
           testSeries: '$testSeriesDetails', 
           createdAt: 1,
           updatedAt: 1,

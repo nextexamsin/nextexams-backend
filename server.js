@@ -57,6 +57,7 @@ const blogRoutes = require('./routes/blogRoutes');
 const commentRoutes = require('./routes/commentRoutes');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware.js');
 const { apiLimiter } = require('./utils/rateLimiter');
+const examCategoryRoutes = require('./routes/examCategoryRoutes');
 
 // --- INITIALIZE EXPRESS APP ---
 const app = express();
@@ -128,6 +129,7 @@ app.use('/api/feedback', apiLimiter, feedbackRoutes);
 app.use('/api/notifications', apiLimiter, notificationRoutes);
 app.use('/api/blog', apiLimiter, blogRoutes);
 app.use('/api/comments', commentRoutes);
+app.use('/api/exam-categories', examCategoryRoutes);
 
 // --- CUSTOM ERROR HANDLING MIDDLEWARE ---
 app.use(notFound);

@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const multer = require('multer'); // 👈 1. Import multer
+const multer = require('multer');
 
 const {
     createTestSeries,
@@ -22,20 +22,21 @@ const {
     generateDynamicTestSeries,
     bulkUploadTestSeries,
     updateTestStatus, 
-    getPublicTestsByGroupId
+    getPublicTestsByGroupId,
+    getFilterOptions // 👈 1. Added new controller import
 } = require('../controllers/testSeriesController');
 
 const { protect, adminOnly } = require('../middleware/authMiddleware');
 
 // Configure multer to store the file in memory
-const upload = multer({ storage: multer.memoryStorage() }); // 👈 3. Initialize multer
+const upload = multer({ storage: multer.memoryStorage() });
 
 // --- Admin-Only Routes ---
 router.post('/', protect, adminOnly, createTestSeries);
 router.post('/generate-dynamic', protect, adminOnly, generateDynamicTestSeries);
 router.put('/:id/status', protect, adminOnly, updateTestStatus);
 
-// 👇 4. Add the new bulk upload route here
+// Bulk upload route
 router.post(
     '/bulk-upload',
     protect,
@@ -49,12 +50,16 @@ router.delete('/:id', protect, adminOnly, deleteTestSeries);
 
 
 // --- User-Facing Routes ---
+
+// ✅ NEW: Filter Options (Must be before /:id routes)
+router.get('/filters', getFilterOptions); 
+
 router.get('/', getAllTestSeries);
 router.get('/recent', protect, getRecentTestSeriesForUser);
 router.get('/attempted-summary', protect, getLatestAttemptSummaries);
 router.post('/start', protect, startTestSecure);
 
-// ✅ NEW: Public Test List Route (No Auth)
+// Public Test List Route (No Auth)
 router.get('/public/group/:groupId', getPublicTestsByGroupId);
 
 // Routes with parameters

@@ -11,12 +11,10 @@ const bookSchema = new mongoose.Schema({
         required: [true, 'Author name is required.'],
         trim: true,
     },
-    // FIX: Changed 'link' to 'amazonLink' to match the frontend form
     amazonLink: {
         type: String,
         required: [true, 'Amazon link is required.'],
     },
-    // FIX: Changed 'image' to 'coverImage' to match the frontend form
     coverImage: {
         type: String,
         required: [true, 'Cover image URL is required.'],
@@ -28,10 +26,15 @@ const bookSchema = new mongoose.Schema({
     category: {
         type: String,
         trim: true,
+    },
+    // ✅ NEW: Global Tags for connecting to Test Series
+    tags: {
+        type: [String],
+        default: [],
+        index: true
     }
 }, {
-    timestamps: true // Automatically adds createdAt and updatedAt fields
+    timestamps: true 
 });
 
 module.exports = mongoose.model('Book', bookSchema);
-

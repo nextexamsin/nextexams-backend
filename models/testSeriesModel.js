@@ -32,8 +32,7 @@ const sectionSchema = new mongoose.Schema({
     negativeMarking: { type: Number, default: null },
     markingScheme: { type: markingSchemeSchema, default: null },
 
-    // ✅ NEW: Languages allowed in this specific section
-    // If 'hi' is missing, questions will show in English only, even if Hindi exists.
+    // Languages allowed in this specific section
     languages: {
         type: [String],
         enum: ['en', 'hi'],
@@ -71,7 +70,31 @@ const testSeriesSchema = new mongoose.Schema({
     title: { type: String, required: true },
     description: { type: String },
     exam: { type: String, required: true },
+    
+    // Legacy generic tags (Keep this for extra metadata)
     subjectTags: [String],
+
+    // ✅ NEW: Global Book Tags (Matches with Book.tags)
+    tags: { 
+        type: [String], 
+        default: [] 
+    },
+
+    // ✅ NEW: Level 3 Filter (Subject)
+    // Stores "physics", "gk", etc. directly as a string.
+    subject: { 
+        type: String, 
+        trim: true,
+        lowercase: true,
+        default: null 
+    },
+
+    filter1: { 
+        type: String, 
+        trim: true, 
+        default: null 
+    },
+
     releaseDate: { type: Date },
     isPaid: { type: Boolean, default: false },
     
@@ -81,10 +104,21 @@ const testSeriesSchema = new mongoose.Schema({
         default: 'draft',
     },
     
+    // Level 1 Filter: Test Type
     testType: {
         type: String,
         enum: ['full-length', 'sectional', 'quiz'],
         default: 'full-length',
+        index: true // ✅ Indexed for faster filtering
+    },
+
+    // ✅ NEW: Level 2 Filter (Sub Category)
+    // Stores "5min", "10min", "Mock", "PYQ" directly as a string.
+    subCategory: {
+        type: String,
+        trim: true,
+        default: null,
+        index: true // ✅ Indexed for faster filtering
     },
 
     testDurationInMinutes: { type: Number, default: null },
@@ -109,5 +143,7 @@ const testSeriesSchema = new mongoose.Schema({
     groupId: { type: mongoose.Schema.Types.ObjectId, ref: 'TestSeriesGroup' },
 }, { timestamps: true });
 
+// Compound index to speed up the "Filter inside Filter" queries
+testSeriesSchema.index({ testType: 1, subCategory: 1, subject: 1, filter1: 1 });
 
 module.exports = mongoose.model('TestSeries', testSeriesSchema);

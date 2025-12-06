@@ -19,12 +19,14 @@ export const createTestSeries = async (req, res) => {
     try {
         const { sections, testDurationInMinutes } = req.body;
 
+        // Auto-calculate duration if not provided
         if (!testDurationInMinutes && sections?.length > 0) {
             req.body.testDurationInMinutes = sections.reduce((sum, sec) => {
                 return sum + (Number(sec.durationInMinutes) || 0);
             }, 0);
         }
 
+        // Create the test (req.body now includes 'subCategory' and 'subject' from frontend)
         const test = new TestSeries(req.body);
 
         await test.populate('sections.questions');
@@ -278,6 +280,11 @@ export const bulkUploadTestSeries = async (req, res) => {
             releaseDate: details['Release Date'] ? new Date(details['Release Date']) : null,
             sections: finalSections,
             groupId: groupId || null,
+
+            // ✅ NEW: Map Excel Columns to Model Fields
+            filter1: details['Filter Category'] ? String(details['Filter Category']).trim() : null,
+            subCategory: details['Sub Category'] ? String(details['Sub Category']).trim() : null, 
+            subject: details['Subject Filter'] ? String(details['Subject Filter']).trim().toLowerCase() : null
         });
         
         // Populate to calculate total marks
@@ -312,11 +319,34 @@ export const bulkUploadTestSeries = async (req, res) => {
 
 
 
-// GET: All test series
+
 export const getAllTestSeries = async (req, res) => {
     try {
-        // This should have NO status filter to ensure it returns everything for the admin panel
-        const tests = await TestSeries.find().sort({ createdAt: -1 });
+        const { testType, subCategory, subject, exam, status, isPaid, filter1 } = req.query;
+        
+        // Build a dynamic query object
+        const query = {};
+
+        if (testType) query.testType = testType;
+        if (subCategory) query.subCategory = subCategory;
+        if (exam) query.exam = exam;
+        if (filter1) query.filter1 = filter1;
+        
+        // Ensure subject search is lowercase to match storage format
+        if (subject) query.subject = subject.toLowerCase();
+
+        // Boolean filters
+        if (isPaid !== undefined) query.isPaid = isPaid === 'true';
+
+        // Status handling (Admin vs User)
+        // If status is passed explicitly, use it. Otherwise, default logic:
+        // You might want to default to 'published' if not admin, but for now:
+        if (status) query.status = status;
+
+        const tests = await TestSeries.find(query)
+            .sort({ createdAt: -1 })
+            .select('-sections'); // Exclude sections/questions for lighter load on list view
+            
         res.json(tests);
     } catch (err) {
         console.error('Get All TestSeries Error:', err.message);
@@ -341,7 +371,7 @@ export const getTestSeriesById = async (req, res) => {
     }
 };
 
-// ✅ CHANGE: Refactored update function to correctly calculate totalMarks upon update.
+
 export const updateTestSeries = async (req, res) => {
   try {
     const testToUpdate = await TestSeries.findById(req.params.id);
@@ -349,13 +379,20 @@ export const updateTestSeries = async (req, res) => {
         return res.status(404).json({ error: 'TestSeries not found' });
     }
 
+    // Normalize subject to lowercase if it is being updated
+    if (req.body.subject) {
+        req.body.subject = req.body.subject.toLowerCase();
+    }
+
     // Apply the updates from the request body
     Object.assign(testToUpdate, req.body);
 
-    // Recalculate and set totalMarks
-    await testToUpdate.populate('sections.questions');
-    const { total } = calcScore([], testToUpdate);
-    testToUpdate.totalMarks = total;
+    // If sections changed, recalculate totalMarks
+    if (req.body.sections) {
+        await testToUpdate.populate('sections.questions');
+        const { total } = calcScore([], testToUpdate);
+        testToUpdate.totalMarks = total;
+    }
     
     const updatedTest = await testToUpdate.save();
     res.json(updatedTest);
@@ -364,6 +401,27 @@ export const updateTestSeries = async (req, res) => {
     console.error('Update TestSeries Error:', err.message);
     res.status(400).json({ error: err.message });
   }
+};
+
+export const getFilterOptions = async (req, res) => {
+    try {
+        const [subCategories, subjects, exams, filter1s] = await Promise.all([
+            TestSeries.distinct('subCategory', { status: 'published' }),
+            TestSeries.distinct('subject', { status: 'published' }),
+            TestSeries.distinct('exam', { status: 'published' }),
+            TestSeries.distinct('filter1', { status: 'published' })
+        ]);
+
+        res.json({
+            subCategories: subCategories.filter(Boolean), // Remove nulls
+            subjects: subjects.filter(Boolean),
+            exams: exams.filter(Boolean),
+            filter1: filter1s.filter(Boolean)
+        });
+    } catch (err) {
+        console.error('Get Filter Options Error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
 };
 
 
@@ -397,17 +455,18 @@ export const deleteTestSeries = async (req, res) => {
 
 // Get recent test series for a user
 export const getRecentTestSeriesForUser = async (req, res) => {
-  try {
-    const userId = req.user._id;
-    const recent = await TestSeries.find({ 'attempts.userId': userId })
-      .sort({ updatedAt: -1 })
-      .limit(5)
-      .select('title exam subjectTags releaseDate');
-    res.json(recent);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Error fetching recent test series' });
-  }
+  try {
+    const userId = req.user._id;
+    const recent = await TestSeries.find({ 'attempts.userId': userId })
+      .sort({ updatedAt: -1 })
+      .limit(5)
+      // ✅ Added 'filter1'
+      .select('title exam subjectTags releaseDate filter1');
+    res.json(recent);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error fetching recent test series' });
+  }
 };
 
 
@@ -766,7 +825,8 @@ const rankList = sortedByScore.slice(0, 10).map(entry => ({
       marksDistribution,
       medianScore,
       cutoff: test.cutoff || {},
-      questionDetails
+      questionDetails,
+        tags: test.tags || []
     });
 
   } catch (err) {
@@ -1148,7 +1208,8 @@ export const getPublicTestsByGroupId = async (req, res) => {
             groupId: groupId, 
             status: 'published' 
         })
-        .select('title description exam testDurationInMinutes totalMarks isPaid releaseDate sections')
+        // ✅ Added 'filter1' here
+        .select('title description exam testDurationInMinutes totalMarks isPaid releaseDate sections filter1')
         .lean();
 
         if (!tests) return res.status(404).json({ message: "No tests found" });
@@ -1158,6 +1219,8 @@ export const getPublicTestsByGroupId = async (req, res) => {
             title: test.title,
             description: test.description,
             exam: test.exam,
+            // ✅ Added 'filter1' here
+            filter1: test.filter1,
             testDurationInMinutes: test.testDurationInMinutes,
             totalMarks: test.totalMarks,
             isPaid: test.isPaid,
@@ -1171,3 +1234,4 @@ export const getPublicTestsByGroupId = async (req, res) => {
         res.status(500).json({ message: 'Failed to load public tests.' });
     }
 };
+

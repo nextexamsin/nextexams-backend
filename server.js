@@ -3,32 +3,27 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const dotenv = require('dotenv');
+dotenv.config();
+
 const helmet = require('helmet');
 const http = require('http');
 const { Server } = require('socket.io');
 const admin = require('firebase-admin');
+const Redis = require('ioredis');
+const cron = require('node-cron'); // <--- ADDED: Import node-cron
 
-// --- LOAD ENVIRONMENT VARIABLES ---
-dotenv.config();
-
-// --- MODIFIED & CORRECTED: Initialize Firebase Admin SDK ---
+// --- INITIALIZE FIREBASE ADMIN SDK ---
 try {
     let serviceAccount;
-
-    // This logic checks if the app is running on a live server (like Render)
-    // where the credentials are set as an environment variable.
+    // Check if running on live server (Render) or local
     if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-        // On Render: Parse the credentials from the environment variable
         serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-        console.log('Initializing Firebase Admin SDK from environment variable...');
     } else {
-        // On your Local Machine: Read the credentials from the local file
-        console.log('Initializing Firebase Admin SDK from local file...');
         serviceAccount = require('./config/firebase-service-account.json');
     }
 
     admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
+        credential: admin.credential.cert(serviceAccount)
     });
     console.log('✅ Firebase Admin SDK initialized successfully.');
 
@@ -36,6 +31,31 @@ try {
     console.error('❌ Failed to initialize Firebase Admin SDK!', error);
     process.exit(1);
 }
+
+// --- REDIS CLOUD CONNECTION (Upstash) ---
+const redis = new Redis(process.env.UPSTASH_REDIS_REST_URL, {
+    tls: {},
+    family: 6 
+});
+
+redis.on('connect', () => {
+    console.log('✅ Connected to Upstash Redis Cloud successfully.');
+});
+
+redis.on('error', (err) => {
+    console.error('❌ Redis Connection Error:', err.message);
+});
+
+// --- CRON JOB: KEEP REDIS ALIVE ---
+// Runs every day at midnight (00:00)
+cron.schedule('0 0 * * *', async () => {
+    try {
+        await redis.ping();
+        console.log('🔔 Daily Cron: Redis Ping successful (Keep-Alive)');
+    } catch (err) {
+        console.error('❌ Daily Cron: Redis Ping failed:', err.message);
+    }
+});
 
 // --- GLOBAL ERROR HANDLERS ---
 process.on('uncaughtException', (err) => {
@@ -66,9 +86,9 @@ const server = http.createServer(app);
 // --- SECURITY & MIDDLEWARE CONFIGURATION ---
 app.set('trust proxy', 1);
 app.use(
-  helmet({
-    contentSecurityPolicy: false,
-  })
+    helmet({
+        contentSecurityPolicy: false,
+    })
 );
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -110,9 +130,11 @@ io.on('connection', (socket) => {
     });
 });
 
+// --- INJECT GLOBALS INTO REQUEST (Middleware) ---
 app.use((req, res, next) => {
     req.io = io;
     req.onlineUsers = onlineUsers;
+    req.redis = redis; 
     next();
 });
 

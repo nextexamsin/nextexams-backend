@@ -79,61 +79,102 @@ export const createTestSeries = async (req, res) => {
 
 export const generateDynamicTestSeries = async (req, res) => {
     try {
-        const { name: title, sections: sectionRules, ...testDetails } = req.body;
+        const { name: title, sections: sectionData, ...testDetails } = req.body;
 
-        if (!title || !testDetails.exam || !sectionRules || !Array.isArray(sectionRules) || sectionRules.length === 0) {
-            return res.status(400).json({ error: 'Test series title, exam, and at least one section rule are required.' });
+        if (!title || !testDetails.exam || !sectionData || !Array.isArray(sectionData) || sectionData.length === 0) {
+            return res.status(400).json({ error: 'Test series title, exam, and at least one section are required.' });
         }
 
         const allGeneratedQuestionIds = new Set();
         const finalSections = [];
 
-        for (const section of sectionRules) {
+        for (const section of sectionData) {
             const sectionQuestionIds = [];
-            
-            for (const rule of section.rules) {
-                const query = {};
-                if (rule.subject) query.subject = rule.subject;
-                if (rule.chapter) query.chapter = rule.chapter;
-                if (rule.topic) query.topic = rule.topic;
-                if (rule.difficulty) query.difficulty = rule.difficulty;
 
-                if (allGeneratedQuestionIds.size > 0) {
-                    query._id = { $nin: [...allGeneratedQuestionIds].map(id => new mongoose.Types.ObjectId(id)) };
-                }
+            // ---------------------------------------------------------
+            // ✅ NEW LOGIC: DIRECT IMPORT (Bypasses Rule Engine)
+            // ---------------------------------------------------------
+            if (section.exactQuestionIds && Array.isArray(section.exactQuestionIds) && section.exactQuestionIds.length > 0) {
+                console.log(`[Direct Import] Importing ${section.exactQuestionIds.length} questions for section: ${section.title}`);
+                
+                // 1. Validate that these IDs actually exist in DB
+                const validQuestions = await Question.find({ 
+                    _id: { $in: section.exactQuestionIds } 
+                }).select('_id');
 
-                const sourceTag = (rule.tags || []).find(tag => tag.startsWith('source_test_'));
-                if (sourceTag) {
-                    const sourceTestId = sourceTag.replace('source_test_', '');
-                    const sourceTest = await TestSeries.findById(sourceTestId).lean();
+                // 2. Add them to the list
+                validQuestions.forEach(q => {
+                    const qIdStr = q._id.toString();
                     
-                    if (sourceTest && Array.isArray(sourceTest.sections)) {
-                        const sourceQuestionIds = sourceTest.sections.flatMap(sec => sec.questions);
-                        query._id = { ...query._id, $in: sourceQuestionIds };
+                    // Optional: Check for duplicates across sections if you want unique questions only
+                    if (!allGeneratedQuestionIds.has(qIdStr)) {
+                        sectionQuestionIds.push(q._id);
+                        allGeneratedQuestionIds.add(qIdStr);
                     } else {
-                        query._id = { ...query._id, $in: [] }; 
+                        // If you allow duplicates across sections, just push it:
+                        // sectionQuestionIds.push(q._id);
+                        
+                        // If you want to strictly prevent duplicates, do nothing here.
+                        // For direct import, usually we allow the admin to do what they want, so let's push it:
+                        // (Comment out the 'if' above if you want to allow duplicates)
                     }
+                });
+
+                if (sectionQuestionIds.length === 0) {
+                     return res.status(400).json({ error: `Direct import failed for section "${section.title}". No valid questions found.` });
                 }
+            } 
+            // ---------------------------------------------------------
+            // 🛑 EXISTING LOGIC: RULE BASED GENERATION
+            // ---------------------------------------------------------
+            else if (section.rules && section.rules.length > 0) {
+                for (const rule of section.rules) {
+                    const query = {};
+                    if (rule.subject) query.subject = rule.subject;
+                    if (rule.chapter) query.chapter = rule.chapter;
+                    if (rule.topic) query.topic = rule.topic;
+                    if (rule.difficulty) query.difficulty = rule.difficulty;
 
-                const questions = await Question.aggregate([
-                    { $match: query },
-                    { $sample: { size: Number(rule.count) || 0 } },
-                    { $project: { _id: 1 } }
-                ]);
+                    // Exclude questions already used in previous sections
+                    if (allGeneratedQuestionIds.size > 0) {
+                        query._id = { $nin: [...allGeneratedQuestionIds].map(id => new mongoose.Types.ObjectId(id)) };
+                    }
 
-                const questionIds = questions.map(q => q._id);
+                    // Handle Source Tags
+                    const sourceTag = (rule.tags || []).find(tag => tag.startsWith('source_test_'));
+                    if (sourceTag) {
+                        const sourceTestId = sourceTag.replace('source_test_', '');
+                        const sourceTest = await TestSeries.findById(sourceTestId).lean();
+                        
+                        if (sourceTest && Array.isArray(sourceTest.sections)) {
+                            const sourceQuestionIds = sourceTest.sections.flatMap(sec => sec.questions);
+                            query._id = { ...query._id, $in: sourceQuestionIds };
+                        } else {
+                            // If source test not found, force empty result to avoid random questions
+                            query._id = { ...query._id, $in: [] }; 
+                        }
+                    }
 
-                if (questionIds.length < rule.count) {
-                    const ruleDescription = `${rule.subject || 'Any Subject'} > ${rule.chapter || 'Any Chapter'}`;
-                    return res.status(400).json({ 
-                        error: `Not enough questions for rule: [${ruleDescription}]. Found ${questionIds.length}, needed ${rule.count}.`
+                    const questions = await Question.aggregate([
+                        { $match: query },
+                        { $sample: { size: Number(rule.count) || 0 } },
+                        { $project: { _id: 1 } }
+                    ]);
+
+                    const questionIds = questions.map(q => q._id);
+
+                    if (questionIds.length < rule.count) {
+                        const ruleDescription = `${rule.subject || 'Any Subject'} > ${rule.chapter || 'Any Chapter'}`;
+                        return res.status(400).json({ 
+                            error: `Not enough questions for rule: [${ruleDescription}]. Found ${questionIds.length}, needed ${rule.count}.`
+                        });
+                    }
+                    
+                    questionIds.forEach(id => {
+                        sectionQuestionIds.push(id);
+                        allGeneratedQuestionIds.add(id.toString());
                     });
                 }
-                
-                questionIds.forEach(id => {
-                    sectionQuestionIds.push(id);
-                    allGeneratedQuestionIds.add(id.toString());
-                });
             }
 
             finalSections.push({
@@ -143,7 +184,6 @@ export const generateDynamicTestSeries = async (req, res) => {
                 marksPerQuestion: section.marksPerQuestion,
                 negativeMarking: section.negativeMarking,
                 markingScheme: section.markingScheme,
-                // ✅ CRITICAL UPDATE: Save the languages configuration
                 languages: section.languages || ['en'] 
             });
         }
@@ -161,7 +201,7 @@ export const generateDynamicTestSeries = async (req, res) => {
 
         const savedTest = await newTestSeries.save();
         
-        // Notification logic (kept same as your existing code)
+        // ... (Keep your Notification Logic exactly as it is) ...
         try {
             if (savedTest.isPublished) {
                 const message = `🚀 New Test Available: ${savedTest.title}`;
@@ -171,7 +211,7 @@ export const generateDynamicTestSeries = async (req, res) => {
                     const notifications = allUsers.map(user => ({ user: user._id, message, link }));
                     await Notification.insertMany(notifications);
                     allUsers.forEach(user => {
-                         if (req.onlineUsers && req.onlineUsers[user._id.toString()]) {
+                          if (req.onlineUsers && req.onlineUsers[user._id.toString()]) {
                            const userSocketId = req.onlineUsers[user._id.toString()];
                            req.io.to(userSocketId).emit("newNotification", { message, link });
                         }

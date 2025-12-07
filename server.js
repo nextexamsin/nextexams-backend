@@ -33,9 +33,14 @@ try {
 }
 
 // --- REDIS CLOUD CONNECTION (Upstash) ---
-const redis = new Redis(process.env.UPSTASH_REDIS_REST_URL, {
+// const redis = new Redis(process.env.UPSTASH_REDIS_REST_URL, {
+//     tls: {},
+//     family: 6 
+// });
+
+
+const redis = new Redis(process.env.REDIS_URL, {
     tls: {},
-    family: 6 
 });
 
 redis.on('connect', () => {

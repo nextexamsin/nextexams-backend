@@ -41,8 +41,7 @@ const apiLimiter = rateLimit({
 // No changes were made to this section.
 // ====================================================================
 
-// const redis = new Redis(process.env.UPSTASH_REDIS_REST_URL, { tls: {} });
-const redis = new Redis(process.env.REDIS_URL, { tls: {} });
+const redis = new Redis(process.env.UPSTASH_REDIS_REST_URL, { tls: {} });
 
 const providers = [
     { name: 'Brevo', monthlyLimit: 9000, dailyLimit: 300 },

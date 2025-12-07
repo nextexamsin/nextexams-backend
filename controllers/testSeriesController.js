@@ -550,16 +550,15 @@ export const startTestSecure = async (req, res) => {
       let initialTime = 0;
 
       if (test.allowSectionJump) {
-        // GLOBAL TIMING: Use testDuration OR sum of all sections
+        // GLOBAL TIMING
         if (test.testDurationInMinutes && test.testDurationInMinutes > 0) {
           initialTime = test.testDurationInMinutes * 60;
         } else {
-          // Fallback: Sum of all section durations
           const totalMinutes = test.sections.reduce((acc, sec) => acc + (sec.durationInMinutes || 0), 0);
           initialTime = totalMinutes * 60;
         }
       } else {
-        // SECTIONAL TIMING: Use FIRST section's duration
+        // SECTIONAL TIMING
         if (test.sections && test.sections.length > 0) {
           initialTime = (test.sections[0].durationInMinutes || 0) * 60;
         }
@@ -573,7 +572,7 @@ export const startTestSecure = async (req, res) => {
         answers: [],
         currentSectionIndex: 0,
         currentQuestionIndex: 0,
-        timeLeftInSeconds: initialTime // Set calculated time
+        timeLeftInSeconds: initialTime
       };
 
       test.attempts.push(newAttempt);
@@ -587,10 +586,31 @@ export const startTestSecure = async (req, res) => {
         select: 'questionText questionImage options questionType',
       });
 
+    // ============================================================
+    // ✅ NEW FIX: Auto-Detect Languages based on Question Content
+    // ============================================================
+    const testObject = populatedTest.toObject(); // Convert to mutable object
+
+    testObject.sections.forEach(section => {
+      // Check if any question has Hindi text or Hindi options
+      const hasHindi = section.questions.some(q => 
+          (q.questionText?.hi && q.questionText.hi.trim() !== '') ||
+          (q.options && q.options.some(opt => opt.text?.hi && opt.text.hi.trim() !== ''))
+      );
+
+      // Force languages array to include 'hi' if content exists
+      if (hasHindi) {
+          section.languages = ['en', 'hi'];
+      } else {
+          // Default to English if no Hindi found
+          section.languages = ['en'];
+      }
+    });
+
     res.status(200).json({
       message: 'Access granted',
       testId,
-      test: populatedTest,
+      test: testObject, // Sending the modified object
       attemptId: existingAttempt._id,
       attempt: existingAttempt
     });
@@ -1103,80 +1123,99 @@ export const getUserAttemptForTest = async (req, res) => {
 
 
 export const getSolutionForTest = async (req, res) => {
-  const { testId } = req.params;
-  const { attemptId } = req.query;
+  const { testId } = req.params;
+  const { attemptId } = req.query;
 
-  try {
-    const test = await TestSeries.findById(testId).populate({
-      path: 'sections.questions',
-      select: 'questionText questionImage options correctAnswer questionType explanation answerMin answerMax'
-    });
+  try {
+    const testDoc = await TestSeries.findById(testId).populate({
+      path: 'sections.questions',
+      select: 'questionText questionImage options correctAnswer questionType explanation answerMin answerMax'
+    });
 
-    if (!test) {
-      return res.status(404).json({ message: 'Test not found' });
-    }
+    if (!testDoc) {
+      return res.status(404).json({ message: 'Test not found' });
+    }
 
-    const selectedAttempt = test.attempts.find(a => a._id.toString() === attemptId);
-    if (!selectedAttempt) {
-      return res.status(404).json({ message: 'Attempt not found for this test.' });
-    }
+    // ============================================================
+    // ✅ NEW FIX: Auto-Detect Languages for Solution
+    // ============================================================
+    const test = testDoc.toObject();
+    
+    test.sections.forEach(section => {
+      const hasHindi = section.questions.some(q => 
+          (q.questionText?.hi && q.questionText.hi.trim() !== '') ||
+          (q.options && q.options.some(opt => opt.text?.hi && opt.text.hi.trim() !== '')) ||
+          (q.explanation?.hi && q.explanation.hi.trim() !== '')
+      );
 
-    const allAttemptsForThisSession = test.attempts.filter(
-      a => a.isCompleted && a.attemptNumber === selectedAttempt.attemptNumber
-    );
+      if (hasHindi) {
+          section.languages = ['en', 'hi'];
+      } else {
+          section.languages = ['en'];
+      }
+    });
 
-    const questionStats = {};
+    const selectedAttempt = test.attempts.find(a => a._id.toString() === attemptId);
+    if (!selectedAttempt) {
+      return res.status(404).json({ message: 'Attempt not found for this test.' });
+    }
 
-    test.sections.forEach(section => {
-      section.questions.forEach(q => {
-        const questionId = q._id.toString();
-        let totalTime = 0;
-        let correctCount = 0;
-        let attemptCount = 0;
+    const allAttemptsForThisSession = test.attempts.filter(
+      a => a.isCompleted && a.attemptNumber === selectedAttempt.attemptNumber
+    );
 
-        allAttemptsForThisSession.forEach(attempt => {
-          const userAnswerObj = attempt.answers.find(ans => ans.questionId.toString() === questionId);
-          if (userAnswerObj && userAnswerObj.selectedOptions.length > 0) {
-            attemptCount++;
-            totalTime += userAnswerObj.timeTaken || 0;
+    const questionStats = {};
 
-            let isCorrect = false;
-            if (q.questionType === 'numerical') {
-              const userAnswer = parseFloat(userAnswerObj.selectedOptions[0]);
-              if (!isNaN(userAnswer) && q.answerMin != null && q.answerMax != null) {
-                isCorrect = userAnswer >= q.answerMin && userAnswer <= q.answerMax;
-              }
-            } else {
-              const correctAns = q.correctAnswer || [];
-              isCorrect = [...userAnswerObj.selectedOptions].sort().join(',') === [...correctAns].sort().join(',');
-            }
-            if (isCorrect) {
-              correctCount++;
-            }
-          }
-        });
+    test.sections.forEach(section => {
+      section.questions.forEach(q => {
+        const questionId = q._id.toString();
+        let totalTime = 0;
+        let correctCount = 0;
+        let attemptCount = 0;
 
-        questionStats[questionId] = {
-          avgTime: attemptCount > 0 ? Math.round(totalTime / attemptCount) : 0,
-          percentCorrect: attemptCount > 0 ? Math.round((correctCount / attemptCount) * 100) : 0,
-        };
-      });
-    });
+        allAttemptsForThisSession.forEach(attempt => {
+          const userAnswerObj = attempt.answers.find(ans => ans.questionId.toString() === questionId);
+          if (userAnswerObj && userAnswerObj.selectedOptions.length > 0) {
+            attemptCount++;
+            totalTime += userAnswerObj.timeTaken || 0;
 
-    const responses = {};
-    selectedAttempt.answers.forEach(ans => {
-      responses[ans.questionId.toString()] = ans.selectedOptions;
-    });
+            let isCorrect = false;
+            if (q.questionType === 'numerical') {
+              const userAnswer = parseFloat(userAnswerObj.selectedOptions[0]);
+              if (!isNaN(userAnswer) && q.answerMin != null && q.answerMax != null) {
+                isCorrect = userAnswer >= q.answerMin && userAnswer <= q.answerMax;
+              }
+            } else {
+              const correctAns = q.correctAnswer || [];
+              isCorrect = [...userAnswerObj.selectedOptions].sort().join(',') === [...correctAns].sort().join(',');
+            }
+            if (isCorrect) {
+              correctCount++;
+            }
+          }
+        });
 
-    res.status(200).json({
-      test,
-      responses,
-      questionStats,
-    });
-  } catch (err) {
-    console.error('Get Solution Error:', err.message);
-    res.status(500).json({ message: 'Failed to fetch solution' });
-  }
+        questionStats[questionId] = {
+          avgTime: attemptCount > 0 ? Math.round(totalTime / attemptCount) : 0,
+          percentCorrect: attemptCount > 0 ? Math.round((correctCount / attemptCount) * 100) : 0,
+        };
+      });
+    });
+
+    const responses = {};
+    selectedAttempt.answers.forEach(ans => {
+      responses[ans.questionId.toString()] = ans.selectedOptions;
+    });
+
+    res.status(200).json({
+      test,
+      responses,
+      questionStats,
+    });
+  } catch (err) {
+    console.error('Get Solution Error:', err.message);
+    res.status(500).json({ message: 'Failed to fetch solution' });
+  }
 };
 
 

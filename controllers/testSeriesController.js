@@ -513,112 +513,170 @@ export const getRecentTestSeriesForUser = async (req, res) => {
 
 
 export const startTestSecure = async (req, res) => {
-  const userId = req.user._id;
-  const { testId } = req.body;
+  const userId = req.user._id;
+  const { testId } = req.body;
 
-  try {
-    const test = await TestSeries.findOne({
-      $or: [
-        { _id: testId },
-        { originalId: testId }
-      ]
-    });
+  try {
+    const test = await TestSeries.findOne({
+      $or: [{ _id: testId }, { originalId: testId }]
+    });
 
-    if (!test) return res.status(404).json({ message: 'Test not found' });
+    if (!test) return res.status(404).json({ message: 'Test not found' });
 
-    if (test.isPaid) {
-      const user = await User.findById(userId);
-      const now = new Date();
-      if (!user.passExpiry || new Date(user.passExpiry) < now) {
-        return res.status(403).json({ message: 'This is a paid test. Please purchase a pass.' });
-      }
-    }
+    // --- Access Control (Paid/Prime Check) ---
+    if (test.isPaid) {
+      const user = await User.findById(userId);
+      const now = new Date();
+      if (!user.passExpiry || new Date(user.passExpiry) < now) {
+        return res.status(403).json({ message: 'This is a paid test. Please purchase a pass.' });
+      }
+    }
 
-    const previousAttempts = test.attempts.filter(a => a.userId.toString() === userId.toString());
-    const completedAttempts = previousAttempts.filter(a => a.isCompleted);
+    const previousAttempts = test.attempts.filter(a => a.userId.toString() === userId.toString());
+    const completedAttempts = previousAttempts.filter(a => a.isCompleted);
 
-    if (test.isPaid && completedAttempts.length >= 1) {
-      const user = await User.findById(userId);
-      const now = new Date();
-      if (!user.passExpiry || new Date(user.passExpiry) < now) {
-        return res.status(403).json({ message: 'Only Prime members can reattempt paid tests.' });
-      }
-    }
+    if (test.isPaid && completedAttempts.length >= 1) {
+      const user = await User.findById(userId);
+      const now = new Date();
+      if (!user.passExpiry || new Date(user.passExpiry) < now) {
+        return res.status(403).json({ message: 'Only Prime members can reattempt paid tests.' });
+      }
+    }
 
-    let existingAttempt = test.attempts.find(a => !a.isCompleted && a.userId.toString() === userId.toString());
+    let existingAttempt = test.attempts.find(a => !a.isCompleted && a.userId.toString() === userId.toString());
 
-    if (!existingAttempt) {
-      const newAttempt = {
-        userId,
-        startedAt: new Date(),
-        isCompleted: false,
-        attemptNumber: completedAttempts.length + 1,
-        answers: [],
-      };
-      test.attempts.push(newAttempt);
-      await test.save();
-      existingAttempt = test.attempts[test.attempts.length - 1];
-    }
+    if (!existingAttempt) {
+      // ✅ FIX: Robust Time Initialization
+      let initialTime = 0;
 
-    const populatedTest = await TestSeries.findById(testId)
-      .populate({
-        path: 'sections.questions',
-        select: 'questionText questionImage options questionType',
-      });
+      if (test.allowSectionJump) {
+        // GLOBAL TIMING: Use testDuration OR sum of all sections
+        if (test.testDurationInMinutes && test.testDurationInMinutes > 0) {
+          initialTime = test.testDurationInMinutes * 60;
+        } else {
+          // Fallback: Sum of all section durations
+          const totalMinutes = test.sections.reduce((acc, sec) => acc + (sec.durationInMinutes || 0), 0);
+          initialTime = totalMinutes * 60;
+        }
+      } else {
+        // SECTIONAL TIMING: Use FIRST section's duration
+        if (test.sections && test.sections.length > 0) {
+          initialTime = (test.sections[0].durationInMinutes || 0) * 60;
+        }
+      }
 
-    res.status(200).json({
-      message: 'Access granted',
-      testId,
-      test: populatedTest,
-      attemptId: existingAttempt._id,
-      attempt: existingAttempt
-    });
-  } catch (err) {
-    console.error('Start Test Error:', err.message);
-    res.status(500).json({ message: 'Server error while starting test' });
-  }
+      const newAttempt = {
+        userId,
+        startedAt: new Date(),
+        isCompleted: false,
+        attemptNumber: completedAttempts.length + 1,
+        answers: [],
+        currentSectionIndex: 0,
+        currentQuestionIndex: 0,
+        timeLeftInSeconds: initialTime // Set calculated time
+      };
+
+      test.attempts.push(newAttempt);
+      await test.save();
+      existingAttempt = test.attempts[test.attempts.length - 1];
+    }
+
+    const populatedTest = await TestSeries.findById(testId)
+      .populate({
+        path: 'sections.questions',
+        select: 'questionText questionImage options questionType',
+      });
+
+    res.status(200).json({
+      message: 'Access granted',
+      testId,
+      test: populatedTest,
+      attemptId: existingAttempt._id,
+      attempt: existingAttempt
+    });
+  } catch (err) {
+    console.error('Start Test Error:', err.message);
+    res.status(500).json({ message: 'Server error while starting test' });
+  }
 };
 
 
 export const saveTestProgress = async (req, res) => {
-  const userId = req.user._id;
-  const { testId } = req.params;
-  const { answers, timeLeftInSeconds, currentSectionIndex, currentQuestionIndex } = req.body;
+  const userId = req.user._id;
+  const { testId } = req.params;
+  const { answers, timeLeftInSeconds, currentSectionIndex, currentQuestionIndex } = req.body;
 
-  try {
-    const test = await TestSeries.findById(testId);
-    if (!test) return res.status(404).json({ message: 'Test not found' });
+  try {
+    const test = await TestSeries.findById(testId);
+    if (!test) return res.status(404).json({ message: 'Test not found' });
 
-    const attempt = test.attempts.find(
-      a => a.userId.toString() === userId.toString() && !a.isCompleted
-    );
+    const attempt = test.attempts.find(
+      a => a.userId.toString() === userId.toString() && !a.isCompleted
+    );
 
-    if (!attempt) return res.status(404).json({ message: 'Attempt not found or already completed' });
+    if (!attempt) return res.status(404).json({ message: 'Attempt not found or already completed' });
 
-    if (timeLeftInSeconds !== undefined) attempt.timeLeftInSeconds = timeLeftInSeconds;
-    if (currentSectionIndex !== undefined) attempt.currentSectionIndex = currentSectionIndex;
-    if (currentQuestionIndex !== undefined) attempt.currentQuestionIndex = currentQuestionIndex;
+    // ✅ FIX: Handle Section Switching Logic
+    const isSwitchingSection = currentSectionIndex !== undefined && currentSectionIndex !== attempt.currentSectionIndex;
 
-    answers.forEach((newAns) => {
-      const existing = attempt.answers.find(a => a.questionId.toString() === newAns.questionId);
-      if (existing) {
-        existing.selectedOptions = newAns.selectedOptions;
-        existing.timeTaken = newAns.timeTaken || 0;
-      } else {
-        attempt.answers.push({
-          questionId: newAns.questionId,
-          selectedOptions: newAns.selectedOptions,
-          timeTaken: newAns.timeTaken || 0,
-        });
-      }
-    });
+    if (isSwitchingSection) {
+      // 1. Update the section index
+      attempt.currentSectionIndex = currentSectionIndex;
 
-    await test.save();
-    res.status(200).json({ message: 'Progress saved' });
-  } catch (err) {
-    console.error('Save Progress Error:', err.message);
-    res.status(500).json({ message: 'Failed to save progress' });
-  }
+      // 2. Handle Timer Logic based on Mode
+      if (test.allowSectionJump) {
+        // GLOBAL TIMING: 
+        // Just save the time passed from frontend (Global countdown)
+        // Ensure we don't save undefined
+        if (timeLeftInSeconds !== undefined) {
+          attempt.timeLeftInSeconds = timeLeftInSeconds;
+        }
+      } else {
+        // SECTIONAL TIMING: 
+        // RESET timer to the NEW section's duration
+        // We ignore 'timeLeftInSeconds' from the request because that belongs to the previous section
+        if (test.sections[currentSectionIndex]) {
+           const newSectionDuration = test.sections[currentSectionIndex].durationInMinutes || 0;
+           attempt.timeLeftInSeconds = newSectionDuration * 60;
+        }
+      }
+    } else {
+      // Same section: just update the time
+      if (timeLeftInSeconds !== undefined) attempt.timeLeftInSeconds = timeLeftInSeconds;
+    }
+
+    if (currentQuestionIndex !== undefined) attempt.currentQuestionIndex = currentQuestionIndex;
+
+    // Update answers
+    if (answers && Array.isArray(answers)) {
+      answers.forEach((newAns) => {
+        const existing = attempt.answers.find(a => a.questionId.toString() === newAns.questionId);
+        if (existing) {
+          existing.selectedOptions = newAns.selectedOptions;
+          existing.timeTaken = newAns.timeTaken || 0;
+        } else {
+          attempt.answers.push({
+            questionId: newAns.questionId,
+            selectedOptions: newAns.selectedOptions,
+            timeTaken: newAns.timeTaken || 0,
+          });
+        }
+      });
+    }
+
+    await test.save();
+    
+    // ✅ Return the UPDATED time so frontend can sync
+    res.status(200).json({ 
+        message: 'Progress saved', 
+        timeLeftInSeconds: attempt.timeLeftInSeconds,
+        currentSectionIndex: attempt.currentSectionIndex
+    });
+
+  } catch (err) {
+    console.error('Save Progress Error:', err.message);
+    res.status(500).json({ message: 'Failed to save progress' });
+  }
 };
 
 

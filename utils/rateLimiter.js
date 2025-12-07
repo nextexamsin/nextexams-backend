@@ -1,19 +1,14 @@
-const Redis = require('ioredis');
+const { Redis } = require('@upstash/redis'); // <--- CHANGED
 const rateLimit = require('express-rate-limit');
-const { sendEmail } = require('./emailService'); // Assuming this path is correct
+const { sendEmail } = require('./emailService'); 
 
 // ====================================================================
-// --- (NEW) API REQUEST RATE LIMITERS (for express-rate-limit) ---
-// This new section fixes the "429 Too Many Requests" error.
+// --- API REQUEST RATE LIMITERS ---
 // ====================================================================
 
-/**
- * @description A strict rate limiter for unauthenticated routes like OTP and login.
- * This is crucial for preventing brute-force attacks.
- */
 const authLimiter = rateLimit({
-    windowMs: 5 * 60 * 1000, // 5 minutes
-    max: 10, // Limit each IP to 10 requests per window
+    windowMs: 5 * 60 * 1000, 
+    max: 10, 
     standardHeaders: true,
     legacyHeaders: false,
     message: {
@@ -21,11 +16,8 @@ const authLimiter = rateLimit({
     },
 });
 
-/**
- * @description A more generous rate limiter for general API usage by logged-in users.
- */
 const apiLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
+    windowMs: 15 * 60 * 1000, 
     max: 500,
     standardHeaders: true,
     legacyHeaders: false,
@@ -34,14 +26,15 @@ const apiLimiter = rateLimit({
     },
 });
 
-
 // ====================================================================
-// --- (EXISTING) EMAIL PROVIDER QUOTA LIMITER ---
-// Your original, excellent logic for managing email sending limits.
-// No changes were made to this section.
+// --- EMAIL PROVIDER QUOTA LIMITER ---
 // ====================================================================
 
-const redis = new Redis(process.env.UPSTASH_REDIS_REST_URL, { tls: {} });
+// Initialize HTTP Client
+const redis = new Redis({
+    url: process.env.UPSTASH_REDIS_REST_URL,
+    token: process.env.UPSTASH_REDIS_REST_TOKEN,
+});
 
 const providers = [
     { name: 'Brevo', monthlyLimit: 9000, dailyLimit: 300 },
@@ -74,6 +67,7 @@ const sendEmailWithRateLimit = async (emailOptions) => {
         const monthlyUsageKey = `email:${provider.name}:monthly:${monthKey}`;
         const dailyUsageKey = `email:${provider.name}:daily:${dayKey}`;
 
+        // mget works the same in the REST client
         const [monthlyCount, dailyCount] = await redis.mget(monthlyUsageKey, dailyUsageKey);
 
         const currentMonthly = parseInt(monthlyCount, 10) || 0;
@@ -85,7 +79,9 @@ const sendEmailWithRateLimit = async (emailOptions) => {
                 await sendEmail(emailOptions, provider.name);
 
                 console.log(`Usage for ${provider.name} incremented.`);
-                redis.multi()
+                
+                // Pipeline works correctly with the REST client
+                await redis.multi()
                     .set(LAST_USED_PROVIDER_KEY, providerIndex)
                     .incr(monthlyUsageKey)
                     .expire(monthlyUsageKey, 31 * 24 * 60 * 60)
@@ -106,8 +102,6 @@ const sendEmailWithRateLimit = async (emailOptions) => {
     throw new Error("All email providers are currently over their free limit or unavailable.");
 };
 
-
-// --- (NEW) EXPORT EVERYTHING ---
 module.exports = { 
     sendEmailWithRateLimit,
     authLimiter,

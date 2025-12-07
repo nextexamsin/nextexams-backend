@@ -9,8 +9,11 @@ const ExamFeedback = require('../models/ExamFeedback');
 const GeneralFeedback = require('../models/GeneralFeedback');
 const PassPurchase = require('../models/PassPurchase');
 const { sendEmailWithRateLimit } = require('../utils/rateLimiter');
-const Redis = require('ioredis');
-const redis = new Redis(process.env.UPSTASH_REDIS_REST_URL, { tls: {} });
+const { Redis } = require('@upstash/redis');
+const redis = new Redis({
+    url: process.env.UPSTASH_REDIS_REST_URL,
+    token: process.env.UPSTASH_REDIS_REST_TOKEN,
+});
 const { OAuth2Client } = require('google-auth-library');
 const jwt = require('jsonwebtoken');
 

@@ -9,13 +9,12 @@ const helmet = require('helmet');
 const http = require('http');
 const { Server } = require('socket.io');
 const admin = require('firebase-admin');
-const Redis = require('ioredis');
-const cron = require('node-cron'); // <--- ADDED: Import node-cron
+const { Redis } = require('@upstash/redis'); // <--- CHANGED: Import REST client
+const cron = require('node-cron');
 
 // --- INITIALIZE FIREBASE ADMIN SDK ---
 try {
     let serviceAccount;
-    // Check if running on live server (Render) or local
     if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
         serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
     } else {
@@ -32,25 +31,29 @@ try {
     process.exit(1);
 }
 
-// --- REDIS CLOUD CONNECTION (Upstash) ---
-const redis = new Redis(process.env.UPSTASH_REDIS_REST_URL, {
-    tls: {},
-    family: 6 
+// --- REDIS CLOUD CONNECTION (Upstash REST) ---
+// The REST client is stateless (HTTP), so no .on('connect') listeners are needed.
+const redis = new Redis({
+    url: process.env.UPSTASH_REDIS_REST_URL,
+    token: process.env.UPSTASH_REDIS_REST_TOKEN,
 });
 
-redis.on('connect', () => {
-    console.log('✅ Connected to Upstash Redis Cloud successfully.');
-});
-
-redis.on('error', (err) => {
+// We can do a quick check to ensure credentials work
+redis.get('ping').then(() => {
+    console.log('✅ Connected to Upstash Redis Cloud (REST) successfully.');
+}).catch((err) => {
     console.error('❌ Redis Connection Error:', err.message);
 });
 
 // --- CRON JOB: KEEP REDIS ALIVE ---
-// Runs every day at midnight (00:00)
+// Note: With REST, "keep-alive" isn't strictly necessary for the connection, 
+// but it's good for checking system health.
 cron.schedule('0 0 * * *', async () => {
     try {
-        await redis.ping();
+        // .ping() is not a standard method on the REST client helper, 
+        // usually we just set/get a key or use the raw command.
+        // Sending a simple command serves the same purpose.
+        await redis.set('heartbeat', 'ok', { ex: 60 }); 
         console.log('🔔 Daily Cron: Redis Ping successful (Keep-Alive)');
     } catch (err) {
         console.error('❌ Daily Cron: Redis Ping failed:', err.message);
@@ -175,7 +178,6 @@ const startServer = async () => {
 
 startServer();
 
-// --- Graceful shutdown for unhandled promise rejections ---
 process.on('unhandledRejection', (err) => {
     console.error('❌ UNHANDLED REJECTION! Shutting down...', err);
     server.close(() => {

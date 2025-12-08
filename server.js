@@ -98,20 +98,26 @@ app.use(express.urlencoded({ extended: true }));
 
 // --- DYNAMIC CORS POLICY ---
 const allowedOrigins = [
-    process.env.CLIENT_URL,
-    'http://localhost:5173',
+    process.env.CLIENT_URL,       // e.g., https://nextexams.in
+    'https://nextexams.in',
+    'https://www.nextexams.in',
+    'https://tool.nextexams.in',  // <--- NEW: Production Tool
+    'http://localhost:5173',      // Localhost Main
+    'http://localhost:5174'       // <--- NEW: Localhost Tool (Vite often uses 5174 if 5173 is busy)
 ];
 
 const corsOptions = {
     origin: (origin, callback) => {
+        // Allow requests with no origin (like mobile apps or curl requests)
         if (!origin) return callback(null, true);
+        
         if (allowedOrigins.includes(origin) || /nextexams-.*\.vercel\.app$/.test(origin)) {
             callback(null, true);
         } else {
             callback(new Error('The CORS policy for this site does not allow access from your origin.'));
         }
     },
-    credentials: true,
+    credentials: true, // <--- CRITICAL: Allows cookies to be shared
 };
 
 app.use(cors(corsOptions));

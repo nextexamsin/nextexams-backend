@@ -2,6 +2,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const cookieParser = require('cookie-parser'); // <--- 1. ADDED THIS IMPORT
 const dotenv = require('dotenv');
 dotenv.config();
 
@@ -9,7 +10,7 @@ const helmet = require('helmet');
 const http = require('http');
 const { Server } = require('socket.io');
 const admin = require('firebase-admin');
-const { Redis } = require('@upstash/redis'); // <--- CHANGED: Import REST client
+const { Redis } = require('@upstash/redis'); 
 const cron = require('node-cron');
 
 // --- INITIALIZE FIREBASE ADMIN SDK ---
@@ -32,13 +33,11 @@ try {
 }
 
 // --- REDIS CLOUD CONNECTION (Upstash REST) ---
-// The REST client is stateless (HTTP), so no .on('connect') listeners are needed.
 const redis = new Redis({
     url: process.env.UPSTASH_REDIS_REST_URL,
     token: process.env.UPSTASH_REDIS_REST_TOKEN,
 });
 
-// We can do a quick check to ensure credentials work
 redis.get('ping').then(() => {
     console.log('✅ Connected to Upstash Redis Cloud (REST) successfully.');
 }).catch((err) => {
@@ -46,13 +45,8 @@ redis.get('ping').then(() => {
 });
 
 // --- CRON JOB: KEEP REDIS ALIVE ---
-// Note: With REST, "keep-alive" isn't strictly necessary for the connection, 
-// but it's good for checking system health.
 cron.schedule('0 0 * * *', async () => {
     try {
-        // .ping() is not a standard method on the REST client helper, 
-        // usually we just set/get a key or use the raw command.
-        // Sending a simple command serves the same purpose.
         await redis.set('heartbeat', 'ok', { ex: 60 }); 
         console.log('🔔 Daily Cron: Redis Ping successful (Keep-Alive)');
     } catch (err) {
@@ -95,20 +89,20 @@ app.use(
 );
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser()); // <--- 2. ADDED COOKIE PARSER MIDDLEWARE
 
 // --- DYNAMIC CORS POLICY ---
 const allowedOrigins = [
-    process.env.CLIENT_URL,       // e.g., https://nextexams.in
+    process.env.CLIENT_URL,       
     'https://nextexams.in',
     'https://www.nextexams.in',
-    'https://tool.nextexams.in',  // <--- NEW: Production Tool
-    'http://localhost:5173',      // Localhost Main
-    'http://localhost:5174'       // <--- NEW: Localhost Tool (Vite often uses 5174 if 5173 is busy)
+    'https://tool.nextexams.in',  
+    'http://localhost:5173',      
+    'http://localhost:5174'       
 ];
 
 const corsOptions = {
     origin: (origin, callback) => {
-        // Allow requests with no origin (like mobile apps or curl requests)
         if (!origin) return callback(null, true);
         
         if (allowedOrigins.includes(origin) || /nextexams-.*\.vercel\.app$/.test(origin)) {
@@ -117,7 +111,7 @@ const corsOptions = {
             callback(new Error('The CORS policy for this site does not allow access from your origin.'));
         }
     },
-    credentials: true, // <--- CRITICAL: Allows cookies to be shared
+    credentials: true, // Allows cookies to be shared
 };
 
 app.use(cors(corsOptions));
@@ -190,3 +184,12 @@ process.on('unhandledRejection', (err) => {
         process.exit(1);
     });
 });
+
+
+
+
+///////
+
+// hello
+
+////

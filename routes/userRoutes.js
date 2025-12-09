@@ -2,12 +2,7 @@ const express = require("express");
 const router = express.Router();
 const { body } = require("express-validator");
 const { protect, protectFirebase } = require("../middleware/authMiddleware");
-
-
-
-
 const { authLimiter } = require("../utils/rateLimiter");
-
 
 const {
     sendOtp,
@@ -24,13 +19,14 @@ const {
     getAttemptedSummaries,
     googleAuthCallback,
     completeGoogleSignup,
-     developerLogin,
-     getUserAnalytics,
-      authWithFirebasePhone,
-      sendLinkEmailOtp,
-      addContactInfo,
-      initiateContactChange,
+    developerLogin,
+    getUserAnalytics,
+    authWithFirebasePhone,
+    sendLinkEmailOtp,
+    addContactInfo,
+    initiateContactChange,
     verifyContactChange,
+    logoutUser, // <--- 1. ADDED THIS IMPORT
 } = require("../controllers/userController");
 
 const { getPassHistory } = require("../controllers/passController");
@@ -39,7 +35,7 @@ const { getPassHistory } = require("../controllers/passController");
 
 router.post(
     "/send-otp",
-    authLimiter, // (CHANGE 3) APPLY the new, centralized limiter
+    authLimiter, 
     [
         body("email", "Please include a valid email").isEmail().normalizeEmail(),
     ],
@@ -48,13 +44,17 @@ router.post(
 
 router.post(
     "/verify-otp",
-    authLimiter, // APPLY the same strict limiter here
+    authLimiter, 
     [
         body("email", "Please include a valid email").isEmail().normalizeEmail(),
         body("otp", "OTP must be a 6-digit number").isLength({ min: 6, max: 6 }).isNumeric(),
     ],
     verifyOtpAndLogin
 );
+
+// --- 2. ADDED LOGOUT ROUTE HERE ---
+// This enables the frontend to POST /api/users/logout
+router.post('/logout', logoutUser);
 
 // APPLY the strict limiter to the Google callback as well to prevent abuse
 router.post('/auth/google/callback', authLimiter, googleAuthCallback);
@@ -63,8 +63,6 @@ router.post('/auth/firebase-phone', authLimiter, protectFirebase, authWithFireba
 
 
 // --- 🔐 Protected Routes (User must be logged in) ---
-// These routes are now covered by the more generous `apiLimiter` in server.js,
-// so no additional limiters are needed here.
 
 router.route('/profile')
     .get(protect, getUserProfile)
@@ -96,3 +94,10 @@ router.post('/profile/verify-contact-change', protect, verifyContactChange);
 
 module.exports = router;
 
+
+///////
+
+
+// helo
+
+///////

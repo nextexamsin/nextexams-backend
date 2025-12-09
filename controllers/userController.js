@@ -1235,10 +1235,29 @@ const verifyContactChange = async (req, res) => {
     }
 };
 
+/**
+ * @desc    Logout user / clear cookie
+ * @route   POST /api/users/logout
+ * @access  Public
+ */
+const logoutUser = (req, res) => {
+    // We clear the cookie by setting it to an empty string and expiring it immediately
+    res.cookie('token', '', {
+        httpOnly: true,
+        secure: true,        // Always true for your production
+        sameSite: 'none',    // Critical for cross-site/subdomain
+        domain: '.nextexams.in', // MUST match the domain used to set the cookie
+        expires: new Date(0) // Set expiry to 1970 (immediate deletion)
+    });
+
+    res.status(200).json({ message: 'Logged out successfully' });
+};
+
 
 module.exports = {
   sendOtp,         
   verifyOtpAndLogin,
+    logoutUser,
   googleAuthCallback,
    authWithFirebasePhone,
   // createAdmin,

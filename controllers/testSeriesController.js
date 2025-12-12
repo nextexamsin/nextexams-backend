@@ -1340,34 +1340,43 @@ export const updateTestStatus = async (req, res) => {
 export const getPublicTestsByGroupId = async (req, res) => {
     try {
         const { groupId } = req.params;
-        // Fetch only published tests, excluding sensitive fields
-        const tests = await TestSeries.find({ 
-            groupId: groupId, 
-            status: 'published' 
-        })
-        // ✅ Added 'filter1' here
-        .select('title description exam testDurationInMinutes totalMarks isPaid releaseDate sections filter1')
-        .lean();
 
-        if (!tests) return res.status(404).json({ message: "No tests found" });
+        // ✅ NEW STRATEGY: Find the Group first, then populate its tests.
+        // This is safer because it relies on the same link the User Panel uses.
+        const group = await TestSeriesGroup.findById(groupId).populate({
+            path: 'testSeries',
+            match: { status: 'published' }, // Only show published tests
+            select: 'title description exam testDurationInMinutes totalMarks isPaid releaseDate sections filter1 testType subCategory subject' // ✅ Include all filter fields
+        }).lean();
 
-        const publicTests = tests.map(test => ({
+        if (!group || !group.testSeries) {
+            return res.json([]); // Return empty array if no group or tests found
+        }
+
+        // Map the populated tests to the public format
+        const publicTests = group.testSeries.map(test => ({
             _id: test._id,
             title: test.title,
             description: test.description,
             exam: test.exam,
-            // ✅ Added 'filter1' here
             filter1: test.filter1,
+            
+            // ✅ CRITICAL: Ensure these filter fields are passed to frontend
+            testType: test.testType || 'full-length',       
+            subCategory: test.subCategory, 
+            subject: test.subject,         
+
             testDurationInMinutes: test.testDurationInMinutes,
             totalMarks: test.totalMarks,
             isPaid: test.isPaid,
             releaseDate: test.releaseDate,
-            questionsCount: test.sections.reduce((acc, sec) => acc + (sec.questions?.length || 0), 0),
-            sectionCount: test.sections.length
+            questionsCount: test.sections?.reduce((acc, sec) => acc + (sec.questions?.length || 0), 0) || 0,
+            sectionCount: test.sections?.length || 0
         }));
 
         res.json(publicTests);
     } catch (err) {
+        console.error('getPublicTestsByGroupId Error:', err);
         res.status(500).json({ message: 'Failed to load public tests.' });
     }
 };

@@ -93,11 +93,3 @@ router.post('/profile/initiate-contact-change', protect, initiateContactChange);
 router.post('/profile/verify-contact-change', protect, verifyContactChange);
 
 module.exports = router;
-
-
-///////
-
-
-// helo
-
-///////

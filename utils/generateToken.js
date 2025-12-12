@@ -1,7 +1,7 @@
 const jwt = require("jsonwebtoken");
 
 const generateToken = (res, user) => {
-  const userId = user._id || user.id; // Handle both object and direct ID
+  const userId = user._id || user.id;
 
   const token = jwt.sign(
     {
@@ -15,19 +15,30 @@ const generateToken = (res, user) => {
     }
   );
 
-  // CRITICAL: We force the environment to 'production' check or default to secure for your setup
+  // Determine environment
   const isProduction = process.env.NODE_ENV === 'production';
 
-  // 1. Clear any old cookies with the WRONG name ('jwt') just in case
-  res.clearCookie('jwt', { domain: '.nextexams.in' });
+  // 1. Clear any potential conflicting cookies
+  // We try clearing both the root domain (prod) and the default domain (localhost)
+  res.clearCookie('token', { domain: '.nextexams.in' });
+  res.clearCookie('token'); 
 
-  // 2. Set the new Shared Cookie with the CORRECT name ('token')
+  // 2. Set the Cookie
   res.cookie('token', token, {
-    httpOnly: true,
-    secure: true,        // Always True for HTTPS (Render/Vercel)
-    sameSite: 'none',    // Required for Cross-Site (api. to www.)
+    httpOnly: true, // Always true (JS cannot read it)
+    
+    // SECURITY SETTINGS:
+    // In Production (HTTPS): We MUST use secure: true and sameSite: 'none' for cross-subdomain.
+    // In Localhost (HTTP): We MUST use secure: false and sameSite: 'lax' or the browser blocks it.
+    secure: isProduction, 
+    sameSite: isProduction ? 'none' : 'lax',
+    
+    // DOMAIN SETTINGS:
+    // In Production: Explicitly set .nextexams.in to share between subdomains.
+    // In Localhost: Leave undefined so it defaults to 'localhost'.
+    domain: isProduction ? '.nextexams.in' : undefined,
+    
     maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-    domain: '.nextexams.in' // Explicitly set for all subdomains
   });
 
   return token;

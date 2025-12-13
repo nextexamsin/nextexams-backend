@@ -509,12 +509,9 @@ export const getRecentTestSeriesForUser = async (req, res) => {
   }
 };
 
-
-
-
 export const startTestSecure = async (req, res) => {
   const userId = req.user._id;
-  const { testId } = req.body;
+  const { testId, reattempt } = req.body;
 
   try {
     const test = await TestSeries.findOne({
@@ -523,34 +520,71 @@ export const startTestSecure = async (req, res) => {
 
     if (!test) return res.status(404).json({ message: 'Test not found' });
 
-    // --- Access Control (Paid/Prime Check) ---
-    if (test.isPaid) {
-      const user = await User.findById(userId);
-      const now = new Date();
-      if (!user.passExpiry || new Date(user.passExpiry) < now) {
-        return res.status(403).json({ message: 'This is a paid test. Please purchase a pass.' });
-      }
-    }
+    // 1. Fetch User to check Prime Status
+    // We need to check passExpiry to know if they are a "Normal" or "Prime" user
+    const user = await User.findById(userId).select('passExpiry role');
+    const isPrime = user.passExpiry && new Date(user.passExpiry) > new Date();
+    const isAdmin = user.role === 'admin';
 
+    // 2. Calculate Attempt History
     const previousAttempts = test.attempts.filter(a => a.userId.toString() === userId.toString());
     const completedAttempts = previousAttempts.filter(a => a.isCompleted);
-
-    if (test.isPaid && completedAttempts.length >= 1) {
-      const user = await User.findById(userId);
-      const now = new Date();
-      if (!user.passExpiry || new Date(user.passExpiry) < now) {
-        return res.status(403).json({ message: 'Only Prime members can reattempt paid tests.' });
-      }
-    }
-
+    
+    // Check for active session (Single Session Rule)
     let existingAttempt = test.attempts.find(a => !a.isCompleted && a.userId.toString() === userId.toString());
 
-    if (!existingAttempt) {
-      // ✅ FIX: Robust Time Initialization
+
+    // ============================================================
+    // 🔒 ACCESS CONTROL LOGIC (Updated)
+    // ============================================================
+
+    // Rule A: PAID TESTS
+    // If test is Paid, Non-Prime users cannot enter AT ALL.
+    if (test.isPaid && !isPrime && !isAdmin) {
+        return res.status(403).json({ 
+            message: 'This is a Prime Member exclusive test. Please purchase a pass.',
+            requiresPrime: true 
+        });
+    }
+
+    // Rule B: FREE TESTS - REATTEMPT LIMIT
+    // Normal User: Max 2 Attempts (1st Try + 1 Reattempt)
+    // Prime User: Unlimited
+    const MAX_FREE_ATTEMPTS = 2;
+
+    if (!test.isPaid && !isPrime && !isAdmin) {
+        if (!existingAttempt && completedAttempts.length >= MAX_FREE_ATTEMPTS) {
+            // ✅ CHANGE: Return 200 (OK) so browser doesn't log an error
+            return res.status(200).json({ 
+                success: false, // Mark logical failure
+                errorType: 'PRIME_LIMIT',
+                message: `You have reached the maximum free attempts for this test. Upgrade to Prime to unlock unlimited reattempts and analytics.`,
+                requiresPrime: true 
+            });
+        }
+    }
+
+    // ============================================================
+    // 🔒 BACK BUTTON / REFRESH PROTECTION
+    // ============================================================
+    
+    if (existingAttempt) {
+      // Resume existing session - Allow access
+    } 
+    else {
+      // If user has completed attempts and didn't ask for a reattempt, block them.
+      if (completedAttempts.length > 0 && !reattempt) {
+         return res.status(403).json({ 
+             message: 'Test already completed.', 
+             status: 'completed',
+             attemptId: completedAttempts[completedAttempts.length-1]._id
+         });
+      }
+
+      // Create New Attempt Logic (Passed checks above)
       let initialTime = 0;
 
       if (test.allowSectionJump) {
-        // GLOBAL TIMING
         if (test.testDurationInMinutes && test.testDurationInMinutes > 0) {
           initialTime = test.testDurationInMinutes * 60;
         } else {
@@ -558,7 +592,6 @@ export const startTestSecure = async (req, res) => {
           initialTime = totalMinutes * 60;
         }
       } else {
-        // SECTIONAL TIMING
         if (test.sections && test.sections.length > 0) {
           initialTime = (test.sections[0].durationInMinutes || 0) * 60;
         }
@@ -580,29 +613,24 @@ export const startTestSecure = async (req, res) => {
       existingAttempt = test.attempts[test.attempts.length - 1];
     }
 
+    // Populate and Return Test Data
     const populatedTest = await TestSeries.findById(testId)
       .populate({
         path: 'sections.questions',
         select: 'questionText questionImage options questionType',
       });
 
-    // ============================================================
-    // ✅ NEW FIX: Auto-Detect Languages based on Question Content
-    // ============================================================
-    const testObject = populatedTest.toObject(); // Convert to mutable object
+    const testObject = populatedTest.toObject(); 
 
     testObject.sections.forEach(section => {
-      // Check if any question has Hindi text or Hindi options
       const hasHindi = section.questions.some(q => 
           (q.questionText?.hi && q.questionText.hi.trim() !== '') ||
           (q.options && q.options.some(opt => opt.text?.hi && opt.text.hi.trim() !== ''))
       );
 
-      // Force languages array to include 'hi' if content exists
       if (hasHindi) {
           section.languages = ['en', 'hi'];
       } else {
-          // Default to English if no Hindi found
           section.languages = ['en'];
       }
     });
@@ -610,10 +638,11 @@ export const startTestSecure = async (req, res) => {
     res.status(200).json({
       message: 'Access granted',
       testId,
-      test: testObject, // Sending the modified object
+      test: testObject,
       attemptId: existingAttempt._id,
       attempt: existingAttempt
     });
+
   } catch (err) {
     console.error('Start Test Error:', err.message);
     res.status(500).json({ message: 'Server error while starting test' });
@@ -630,11 +659,16 @@ export const saveTestProgress = async (req, res) => {
     const test = await TestSeries.findById(testId);
     if (!test) return res.status(404).json({ message: 'Test not found' });
 
+    // ✅ CHECK: Ensure we only fetch IN-PROGRESS attempts
     const attempt = test.attempts.find(
       a => a.userId.toString() === userId.toString() && !a.isCompleted
     );
 
-    if (!attempt) return res.status(404).json({ message: 'Attempt not found or already completed' });
+    // If no attempt found, it implies the test is either not started OR already completed.
+    // We return 403 to indicate the action is forbidden on a closed test.
+    if (!attempt) {
+        return res.status(403).json({ message: 'Cannot save. Attempt not active or already submitted.' });
+    }
 
     // ✅ FIX: Handle Section Switching Logic
     const isSwitchingSection = currentSectionIndex !== undefined && currentSectionIndex !== attempt.currentSectionIndex;
@@ -645,16 +679,12 @@ export const saveTestProgress = async (req, res) => {
 
       // 2. Handle Timer Logic based on Mode
       if (test.allowSectionJump) {
-        // GLOBAL TIMING: 
-        // Just save the time passed from frontend (Global countdown)
-        // Ensure we don't save undefined
+        // GLOBAL TIMING
         if (timeLeftInSeconds !== undefined) {
           attempt.timeLeftInSeconds = timeLeftInSeconds;
         }
       } else {
-        // SECTIONAL TIMING: 
-        // RESET timer to the NEW section's duration
-        // We ignore 'timeLeftInSeconds' from the request because that belongs to the previous section
+        // SECTIONAL TIMING
         if (test.sections[currentSectionIndex]) {
            const newSectionDuration = test.sections[currentSectionIndex].durationInMinutes || 0;
            attempt.timeLeftInSeconds = newSectionDuration * 60;
@@ -686,7 +716,6 @@ export const saveTestProgress = async (req, res) => {
 
     await test.save();
     
-    // ✅ Return the UPDATED time so frontend can sync
     res.status(200).json({ 
         message: 'Progress saved', 
         timeLeftInSeconds: attempt.timeLeftInSeconds,
@@ -698,6 +727,7 @@ export const saveTestProgress = async (req, res) => {
     res.status(500).json({ message: 'Failed to save progress' });
   }
 };
+
 
 
 

@@ -46,10 +46,9 @@ const submitGeneralFeedback = async (req, res) => {
     }
 };
 
-
 const getMyFeedbackHistory = async (req, res) => {
     try {
-        const userId = req.user._id; 
+        const userId = req.user._id || req.user.id; 
         
         // 1. Exam Feedback 
         const examFeedback = await ExamFeedback.find({ user: userId })
@@ -63,29 +62,31 @@ const getMyFeedbackHistory = async (req, res) => {
             .lean(); 
             
         // 3. Question Reports: 
-        // ✅ FINAL FIX: Explicitly selecting adminResponse on the primary query
         const questionReports = await QuestionReport.find({ userId })
             .select('issueType description status createdAt adminResponse') 
             .populate('questionId', 'questionText')
             .sort({ createdAt: -1 })
             .lean(); 
 
-        // ✅ Corrected final response structure
         res.json({ examFeedback, generalFeedback, questionReports }); 
     } catch (error) {
-        // ✅ Corrected generic error handling for this function
         console.error('Get Feedback History Error:', error.message);
         res.status(500).send("Server Error");
     }
 };
 
-// ✅ FIX: Re-adding the missing function definition
 const reportQuestion = async (req, res) => {
     try {
         const { questionId, testId, issueType, description } = req.body;
-        const userId = req.user._id;
+        const userId = req.user._id || req.user.id;
 
-        const existing = await QuestionReport.findOne({ userId, questionId, status: { $in: ['Pending', 'In Progress'] } });
+        // ✅ FIX: Check for 'pending' (lowercase) to match DB Schema default
+        const existing = await QuestionReport.findOne({ 
+            userId, 
+            questionId, 
+            status: 'pending' 
+        });
+
         if (existing) {
             return res.status(400).json({ message: 'You have already reported this question. We are reviewing it.' });
         }
@@ -102,17 +103,24 @@ const reportQuestion = async (req, res) => {
 const deleteFeedback = async (req, res) => {
     try {
         const feedbackId = req.params.id;
-        const userId = req.user._id;
+        // Handle _id vs id safely
+        const userId = req.user._id || req.user.id;
 
-        // Find report belonging to user AND is pending
+        // 1. Find and Delete
+        // We match:
+        // - _id: The Report ID
+        // - userId: Must belong to the logged-in user (security)
+        // - status: Must be 'pending' (lowercase). Processed reports cannot be deleted.
         const report = await QuestionReport.findOneAndDelete({ 
             _id: feedbackId, 
             userId: userId,
-            status: 'Pending' 
+            status: 'pending' 
         });
 
         if (!report) {
-            return res.status(404).json({ message: 'Report not found or cannot be deleted (already processed).' });
+            return res.status(404).json({ 
+                message: 'Report not found or cannot be deleted (already processed).' 
+            });
         }
 
         res.json({ message: 'Report deleted successfully.' });
@@ -121,12 +129,10 @@ const deleteFeedback = async (req, res) => {
         res.status(500).json({ message: "Server Error" });
     }
 };
-
 // --- ADMIN FUNCTIONS ---
 
 const getAllFeedback = async (req, res) => {
     try {
-        // ✅ Corrected .lean() syntax
         const examFeedback = await ExamFeedback.find().populate('user', 'name email').populate('test', 'title').sort({ createdAt: -1 }).lean();
         const generalFeedback = await GeneralFeedback.find().populate('user', 'name email').sort({ createdAt: -1 }).lean();
         const questionReports = await QuestionReport.find().populate('userId', 'name email').populate('questionId', 'questionText').populate('testId', 'title').sort({ createdAt: -1 }).lean();
@@ -179,7 +185,7 @@ const updateFeedbackStatus = async (req, res) => {
             }
         }
 
-        // 2. RETURN THE UPDATED DOCUMENT (As a plain object)
+        // 2. RETURN THE UPDATED DOCUMENT
         res.json(updatedDoc.toObject()); 
 
     } catch (error) {
@@ -188,7 +194,6 @@ const updateFeedbackStatus = async (req, res) => {
     }
 };
 
-// ✅ EXPORT ALL FUNCTIONS
 module.exports = {
     submitExamFeedback,
     submitGeneralFeedback,

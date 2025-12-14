@@ -1,4 +1,4 @@
-import mongoose from 'mongoose';
+import mongoose from 'mongoose'
 import Question from '../models/Question.js';
 import TestSeries from '../models/testSeriesModel.js';
 import QuestionReport from '../models/QuestionReport.js';
@@ -89,40 +89,35 @@ export const getQuestions = async (req, res) => {
 
 export const getQuestionById = async (req, res) => {
   try {
-    const question = await Question.findById(req.params.id).populate('createdBy', 'name email');
-    
+    const { id } = req.params;
+    const question = await Question.findById(id).populate('createdBy', 'name email').lean();
+
     if (!question) return res.status(404).json({ error: 'Question not found' });
-
-    // ✅ NEW LOGIC: Check if the current user has reported this question
-    let isReported = false;
-
-    // We check 'req.user' because the route might be accessible to guests.
-    // 'req.user' is populated by your auth middleware (e.g., protect).
 
     let reportStatus = null;
 
     if (req.user) {
-        const report = await QuestionReport.findOne({ 
-            userId: req.user._id, // Uses the logged-in user's ID
-            questionId: question._id 
-        }).sort({ createdAt: -1 });
+        const userId = req.user._id || req.user.id;
+
+        // 2. CRITICAL FIX: Explicitly cast IDs to ObjectId
+        const report = await QuestionReport.findOne({
+            userId: new mongoose.Types.ObjectId(userId), 
+            questionId: new mongoose.Types.ObjectId(question._id)
+        }).select('status').lean();
+
         if (report) {
-            reportStatus = report.status; // 'Pending', 'Resolved', etc.
+            reportStatus = report.status; // e.g., 'pending'
         }
     }
 
-    // We use .toObject() to convert the Mongoose document to a plain object
-    // so we can add the custom 'isReported' property.
-    res.json({ 
-        ...question.toObject(), 
-        isReported 
-    });
+    res.json({ ...question, reportStatus });
 
   } catch (err) {
     console.error('Get Question By ID Error:', err.message);
     res.status(500).json({ error: err.message });
   }
 };
+
 
 // PUT - Update a question
 export const updateQuestion = async (req, res) => {
@@ -155,7 +150,7 @@ export const deleteQuestion = async (req, res) => {
   }
 };
 
-// ... (Existing helper functions unchanged)
+
 export const getUniqueSubjects = async (req, res) => {
     try {
       const { tags } = req.query;

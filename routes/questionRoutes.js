@@ -8,7 +8,6 @@ const {
   getQuestionById,
   updateQuestion,
   deleteQuestion,
-  // ✅ 1. Import the new controller functions
   getUniqueSubjects,
   getUniqueChapters,
   getUniqueTopics,
@@ -18,7 +17,6 @@ const {
 const { protect, adminOnly } = require('../middleware/authMiddleware');
 
 // --- NEW: Metadata Routes ---
-// These routes are for fetching data for dynamic dropdowns.
 router.get('/meta/subjects', protect, getUniqueSubjects);
 router.get('/meta/chapters', protect, getUniqueChapters);
 router.get('/meta/topics', protect, getUniqueTopics);
@@ -30,20 +28,21 @@ router.get('/count', protect, adminOnly, getQuestionCount);
 // GET all questions (accessible to any logged-in user)
 router.get('/', protect, getQuestions);
 
-// GET a single question by ID (accessible to any logged-in user)
+// ✅ GET a single question by ID 
+// 'protect' middleware is crucial here so getQuestionById knows req.user
 router.get(
   '/:id',
   protect,
-  [param('id', 'Invalid question ID').isMongoId()], // Validate the ID
+  [param('id', 'Invalid question ID').isMongoId()], 
   getQuestionById
 );
 
 // POST a new question (admins only)
 router.post(
   '/',
-  protect,    // 1. Checks for a valid login token
-  adminOnly,  // 2. Checks if the user has the 'admin' role
-  [           // 3. Validates the incoming data
+  protect,    
+  adminOnly,  
+  [           
     body('questionText', 'Question text is required').not().isEmpty(),
     body('questionType', 'Invalid question type').isIn(['mcq', 'multiple', 'numerical']),
     body('subject', 'Subject is required').not().isEmpty(),

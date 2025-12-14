@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { body } = require('express-validator');
 
-// ✅ FIX 1: Import 'adminOnly' (matching your authMiddleware.js export)
+// Import 'adminOnly' matching your authMiddleware.js export
 const { protect, adminOnly } = require('../middleware/authMiddleware'); 
 
 const {
@@ -52,14 +52,14 @@ router.post('/question', protect, reportQuestion);
 
 // Get User's Own History
 router.get('/my-history', protect, getMyFeedbackHistory);
+
+// ✅ Delete Route (Matches frontend call to /api/feedback/report/:id)
 router.delete('/report/:id', protect, deleteFeedback);
 
 
 // ============================================================
 // 🔒 ADMIN ROUTES
 // ============================================================
-
-// ✅ FIX 2: Use 'adminOnly' in the routes below
 
 // Get ALL feedback (Exam, General, Question Reports)
 router.get('/admin', protect, adminOnly, getAllFeedback);

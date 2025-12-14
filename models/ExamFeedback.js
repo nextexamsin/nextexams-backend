@@ -32,6 +32,10 @@ const examFeedbackSchema = new Schema({
         type: String,
         enum: ['Pending', 'In Progress', 'Resolved', 'Dismissed'],
         default: 'Pending'
+    },
+    adminResponse: {
+        type: String,
+        default: ''
     }
 }, { timestamps: true });
 

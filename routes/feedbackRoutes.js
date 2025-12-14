@@ -1,45 +1,70 @@
-    const express = require('express');
-    const router = express.Router();
-    const { body } = require('express-validator');
-    const { protect } = require('../middleware/authMiddleware');
+const express = require('express');
+const router = express.Router();
+const { body } = require('express-validator');
 
-    const {
-        submitExamFeedback,
-        submitGeneralFeedback,
-        getMyFeedbackHistory
-    } = require('../controllers/feedbackController');
+// ✅ FIX 1: Import 'adminOnly' (matching your authMiddleware.js export)
+const { protect, adminOnly } = require('../middleware/authMiddleware'); 
 
-    // ✅ Corrected validation rules
-    router.post(
-        '/exam',
-        protect,
-        [
-            body('testId', 'Test ID is required').isMongoId(),
-            body('attemptId', 'Attempt ID is required').isMongoId(), // Added rule for attemptId
-            body('rating', 'Rating must be a number between 1 and 5').isInt({ min: 1, max: 5 }),
-            // Changed 'feedback' to 'message' to match the controller
-            body('message', 'Feedback text is required').notEmpty().trim().escape(),
-        ],
-        submitExamFeedback
-    );
+const {
+    submitExamFeedback,
+    submitGeneralFeedback,
+    getMyFeedbackHistory,
+    reportQuestion,
+    getAllFeedback,
+    updateFeedbackStatus,
+    deleteFeedback
+} = require('../controllers/feedbackController');
 
-    // ✅ Corrected validation rules
-    router.post(
-        '/general',
-        protect,
-        [
-        // ✅ CORRECTED RULE for 'category'
+// ============================================================
+// 👤 USER ROUTES
+// ============================================================
+
+// Submit Exam Feedback
+router.post(
+    '/exam',
+    protect,
+    [
+        body('testId', 'Test ID is required').isMongoId(),
+        body('attemptId', 'Attempt ID is required').isMongoId(),
+        body('rating', 'Rating must be a number between 1 and 5').isInt({ min: 1, max: 5 }),
+        body('message', 'Feedback text is required').notEmpty().trim().escape(),
+    ],
+    submitExamFeedback
+);
+
+// Submit General Feedback
+router.post(
+    '/general',
+    protect,
+    [
         body('category', 'Category is required')
             .notEmpty()
             .trim()
-            .isIn(['UI/UX', 'Bug Report', 'Feature Request', 'Other']) 
-            .withMessage('Invalid category selected'), // This replaces .escape()
-
+            .isIn(['UI/UX', 'Bug Report', 'Feature Request', 'Other'])
+            .withMessage('Invalid category selected'),
         body('message', 'Feedback text is required').notEmpty().trim().escape(),
     ],
-        submitGeneralFeedback
-    );
+    submitGeneralFeedback
+);
 
-    router.get('/my-history', protect, getMyFeedbackHistory);
+// Report a specific Question
+router.post('/question', protect, reportQuestion);
 
-    module.exports = router;
+// Get User's Own History
+router.get('/my-history', protect, getMyFeedbackHistory);
+router.delete('/report/:id', protect, deleteFeedback);
+
+
+// ============================================================
+// 🔒 ADMIN ROUTES
+// ============================================================
+
+// ✅ FIX 2: Use 'adminOnly' in the routes below
+
+// Get ALL feedback (Exam, General, Question Reports)
+router.get('/admin', protect, adminOnly, getAllFeedback);
+
+// Update Feedback Status
+router.patch('/admin/:id', protect, adminOnly, updateFeedbackStatus);
+
+module.exports = router;

@@ -2,26 +2,33 @@
 
 const express = require("express");
 const router = express.Router();
+
+// 1. Import User Controllers (REMOVED feedback functions from here)
 const {
   listUsers,
   getUserDetails,
   toggleBlockUser,
   deleteUser,
   grantPrimeAccess,
-  getFeedback,
-  updateFeedbackStatus,
   // createAdmin 
 } = require("../controllers/userController");
 
-// router.post("/create-admin", createAdmin);
+// 2. Import Notification Controllers
+const { 
+  broadcastNotification, 
+  getAllNotifications, 
+  deleteBroadcast 
+} = require("../controllers/notificationController");
 
-// <-- 1. IMPORT THE NEW CONTROLLER FUNCTION
-const { broadcastNotification, getAllNotifications,deleteBroadcast,
-   } = require("../controllers/notificationController");
+// ✅ 3. IMPORT FEEDBACK CONTROLLERS FROM THE CORRECT FILE
+const { 
+  getAllFeedback, 
+  updateFeedbackStatus 
+} = require("../controllers/feedbackController");
 
 const { protect, adminOnly } = require("../middleware/authMiddleware");
 
-// This protects all routes below it, which is perfect.
+// This protects all routes below it
 router.use(protect, adminOnly);
 
 // --- User Management Routes ---
@@ -32,7 +39,8 @@ router.put("/users/:id/prime-access", grantPrimeAccess);
 router.delete("/users/:id", deleteUser);
 
 // --- Feedback Management Routes ---
-router.get("/feedback", getFeedback);
+// ✅ Updated to use the correct controller functions
+router.get("/feedback", getAllFeedback);
 router.patch("/feedback/:id", updateFeedbackStatus);
 
 // --- Notification Management Routes ---

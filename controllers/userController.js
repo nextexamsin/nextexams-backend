@@ -803,38 +803,6 @@ const deleteUser = async (req, res) => {
   }
 };
 
-const getFeedback = async (req, res) => {
-  try {
-    const examFeedback = await ExamFeedback.find({}).populate('user', 'name email').populate('test', 'title').sort({ createdAt: -1 });
-    const generalFeedback = await GeneralFeedback.find({}).populate('user', 'name email').sort({ createdAt: -1 });
-    res.status(200).json({ examFeedback, generalFeedback });
-  } catch (error) {
-    console.error("Error fetching feedback:", error);
-    res.status(500).json({ message: "Server Error" });
-  }
-};
-
-const updateFeedbackStatus = async (req, res) => {
-  const { status, type } = req.body;
-  const { id } = req.params;
-  if (!status || !type || !['Pending', 'In Progress', 'Resolved', 'Dismissed'].includes(status)) {
-    return res.status(400).json({ message: "Invalid status or type provided." });
-  }
-  try {
-    let feedback;
-    const Model = type === 'exam' ? ExamFeedback : GeneralFeedback;
-    feedback = await Model.findById(id);
-    if (!feedback) {
-      return res.status(404).json({ message: 'Feedback not found' });
-    }
-    feedback.status = status;
-    await feedback.save();
-    res.status(200).json(feedback);
-  } catch (error) {
-    console.error("Error updating feedback status:", error);
-    res.status(500).json({ message: "Server Error" });
-  }
-};
 
 /**
  * @desc     Get all profile data for the logged-in user, including test stats.
@@ -1276,8 +1244,6 @@ module.exports = {
   toggleBlockUser,
   deleteUser,
   grantPrimeAccess,
-  getFeedback,
-  updateFeedbackStatus,
   getUserProfile,
   developerLogin,
   getUserAnalytics,

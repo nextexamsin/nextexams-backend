@@ -6,7 +6,9 @@ import TestSeries from '../models/testSeriesModel.js';
 import TestSeriesGroup from '../models/testSeriesGroupModel.js'
 import User from '../models/User.js';
 import Notification from '../models/Notification.js';
+import QuestionReport from '../models/QuestionReport.js';
 import calcScore from '../utils/calcScore.js';
+
 
 const detailedQuestionPopulation = {
   path: 'sections.questions',
@@ -263,6 +265,7 @@ export const bulkUploadTestSeries = async (req, res) => {
                 hi: getVal(q, 'Question Text (Hindi)') || ''
             },
             questionImage: getVal(q, 'Question Image') || null,
+            explanationImage: getVal(q, 'Explanation Image') || null,
             questionType: getVal(q, 'Question Type')?.toLowerCase() || 'mcq',
             
             // ✅ Updated Options for Multilingual
@@ -399,8 +402,8 @@ export const getAllTestSeries = async (req, res) => {
 export const getTestSeriesById = async (req, res) => {
     try {
         const test = await TestSeries.findById(req.params.id)
-            // ✅ FIX: Added correctAnswer and explanation to the selection
-            .populate('sections.questions', 'questionText questionImage options correctAnswer explanation questionType')
+            // 👇 UPDATE THIS LINE
+            .populate('sections.questions', 'questionText questionImage options correctAnswer explanation explanationImage questionType') 
             .populate('attempts.userId', 'name email');
             
         if (!test) return res.status(404).json({ error: 'TestSeries not found' });
@@ -1159,18 +1162,44 @@ export const getSolutionForTest = async (req, res) => {
   try {
     const testDoc = await TestSeries.findById(testId).populate({
       path: 'sections.questions',
-      select: 'questionText questionImage options correctAnswer questionType explanation answerMin answerMax'
+      select: 'questionText questionImage options correctAnswer questionType explanation explanationImage answerMin answerMax'
     });
 
     if (!testDoc) {
       return res.status(404).json({ message: 'Test not found' });
     }
 
-    // ============================================================
-    // ✅ NEW FIX: Auto-Detect Languages for Solution
-    // ============================================================
+    // Convert to object so we can modify it
     const test = testDoc.toObject();
     
+    // ============================================================
+    // ✅ NEW LOGIC: Inject 'isReported' Flag
+    // ============================================================
+    if (req.user) {
+        // 1. Get all question IDs
+        const allQuestionIds = test.sections.flatMap(section => 
+            section.questions.map(q => q._id)
+        );
+
+        // 2. Fetch reports for these questions by this user
+        const userReports = await QuestionReport.find({
+            userId: req.user._id,
+            questionId: { $in: allQuestionIds }
+        }).select('questionId status');
+
+        const reportMap = new Map();
+        userReports.forEach(r => reportMap.set(r.questionId.toString(), r.status));
+
+
+        // 4. Loop through and set the flag
+        test.sections.forEach(section => {
+            section.questions.forEach(q => {
+                q.reportStatus = reportMap.get(q._id.toString()) || null;
+            });
+        });
+    }
+    // ============================================================
+
     test.sections.forEach(section => {
       const hasHindi = section.questions.some(q => 
           (q.questionText?.hi && q.questionText.hi.trim() !== '') ||

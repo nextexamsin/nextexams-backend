@@ -36,6 +36,7 @@ const questionSchema = new mongoose.Schema({
   answerMax: { type: Number },
   
   explanation: { type: localizedStringSchema, default: {} },
+  explanationImage: { type: String, default: '' },
 
   // --- Scoring ---
   marks: { type: Number, required: true, default: 1 },

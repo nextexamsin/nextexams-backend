@@ -23,7 +23,7 @@ const notificationSchema = new mongoose.Schema({
   broadcastId: { type: mongoose.Schema.Types.ObjectId },
     type: {
     type: String,
-    enum: ['toast', 'banner'], // Only allow these two types
+    enum: ['toast', 'banner', 'system'], // Only allow these two types
     default: 'toast',
   },
 }, { timestamps: true }); // timestamps adds createdAt and updatedAt

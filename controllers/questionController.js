@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import Question from '../models/Question.js';
 import TestSeries from '../models/testSeriesModel.js';
+import QuestionReport from '../models/QuestionReport.js';
 
 // Helper to determine languages based on input
 const getAvailableLanguages = (data) => {
@@ -52,12 +53,17 @@ export const getQuestions = async (req, res) => {
 
     // ✅ FIXED: Robust Search for Hybrid Data (Strings & Objects)
     if (search) {
-        // This Regex matches if:
-        // 1. questionText is a string (Old Data) AND matches
-        // 2. questionText.en (New Data) matches
+        // Create a regex for case-insensitive search
+        const searchRegex = { $regex: search, $options: 'i' };
+        
         filter.$or = [
-            { 'questionText': { $regex: search, $options: 'i' } },    // Legacy String search
-            { 'questionText.en': { $regex: search, $options: 'i' } }  // New Object search
+            // Search in English Text
+            { 'questionText.en': searchRegex },
+            // Search in Hindi Text
+            { 'questionText.hi': searchRegex },
+            // Optional: Search in Subject or Exam tags if you want broader search
+            { 'subject': searchRegex },
+            { 'exam': searchRegex }
         ];
     }
 
@@ -80,12 +86,38 @@ export const getQuestions = async (req, res) => {
   }
 };
 
-// GET - Single question by ID
+
 export const getQuestionById = async (req, res) => {
   try {
     const question = await Question.findById(req.params.id).populate('createdBy', 'name email');
+    
     if (!question) return res.status(404).json({ error: 'Question not found' });
-    res.json(question);
+
+    // ✅ NEW LOGIC: Check if the current user has reported this question
+    let isReported = false;
+
+    // We check 'req.user' because the route might be accessible to guests.
+    // 'req.user' is populated by your auth middleware (e.g., protect).
+
+    let reportStatus = null;
+
+    if (req.user) {
+        const report = await QuestionReport.findOne({ 
+            userId: req.user._id, // Uses the logged-in user's ID
+            questionId: question._id 
+        }).sort({ createdAt: -1 });
+        if (report) {
+            reportStatus = report.status; // 'Pending', 'Resolved', etc.
+        }
+    }
+
+    // We use .toObject() to convert the Mongoose document to a plain object
+    // so we can add the custom 'isReported' property.
+    res.json({ 
+        ...question.toObject(), 
+        isReported 
+    });
+
   } catch (err) {
     console.error('Get Question By ID Error:', err.message);
     res.status(500).json({ error: err.message });

@@ -1,16 +1,15 @@
-const { validationResult } = require("express-validator"); // ✅ 1. Import this
+const { validationResult } = require("express-validator");
 const ExamFeedback = require('../models/ExamFeedback');
 const GeneralFeedback = require('../models/GeneralFeedback');
+const QuestionReport = require('../models/QuestionReport'); 
+const Notification = require('../models/Notification');
 
-// @desc    Submit feedback for a specific exam attempt
-// @route   POST /api/feedback/exam
-exports.submitExamFeedback = async (req, res) => {
+// --- USER FUNCTIONS ---
+
+const submitExamFeedback = async (req, res) => {
     const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() });
-    }
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
-    // ✅ CHANGED 'feedback' to 'message' to match the router
     const { testId, attemptId, rating, message } = req.body; 
     try {
         const newFeedback = new ExamFeedback({
@@ -18,7 +17,7 @@ exports.submitExamFeedback = async (req, res) => {
             test: testId,
             attempt: attemptId,
             rating,
-            message // ✅ Use the 'message' variable directly
+            message
         });
         await newFeedback.save();
         res.status(201).json({ message: "Feedback submitted successfully!" });
@@ -28,44 +27,174 @@ exports.submitExamFeedback = async (req, res) => {
     }
 };
 
-exports.submitGeneralFeedback = async (req, res) => {
+const submitGeneralFeedback = async (req, res) => {
     const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() });
-    }
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
-    // ✅ CHANGED 'feedback' to 'message' to match the router
     const { category, message } = req.body;
     try {
         const newFeedback = new GeneralFeedback({
             user: req.user.id,
             category,
-            message // ✅ Use the 'message' variable directly
+            message
         });
         await newFeedback.save();
         res.status(201).json({ message: "Feedback submitted successfully!" });
     } catch (error) {
-        // Log the specific Mongoose error for better debugging
         console.error('Feedback submission error:', error.message);
-        res.status(500).send("Server Error");
+        res.status(500).json({ message: "Server Error" });
     }
 };
 
 
-// @desc    Get the current user's submitted feedback history
-// @route   GET /api/feedback/my-history
-exports.getMyFeedbackHistory = async (req, res) => {
+const getMyFeedbackHistory = async (req, res) => {
     try {
-        const examFeedback = await ExamFeedback.find({ user: req.user.id })
-            .populate('test', 'title')
-            .sort({ createdAt: -1 });
+        const userId = req.user._id; 
+        
+        // 1. Exam Feedback 
+        const examFeedback = await ExamFeedback.find({ user: userId })
+            .populate('test', 'title _id')
+            .sort({ createdAt: -1 })
+            .lean(); 
+            
+        // 2. General Feedback 
+        const generalFeedback = await GeneralFeedback.find({ user: userId })
+            .sort({ createdAt: -1 })
+            .lean(); 
+            
+        // 3. Question Reports: 
+        // ✅ FINAL FIX: Explicitly selecting adminResponse on the primary query
+        const questionReports = await QuestionReport.find({ userId })
+            .select('issueType description status createdAt adminResponse') 
+            .populate('questionId', 'questionText')
+            .sort({ createdAt: -1 })
+            .lean(); 
 
-        const generalFeedback = await GeneralFeedback.find({ user: req.user.id })
-            .sort({ createdAt: -1 });
-
-        res.json({ examFeedback, generalFeedback });
+        // ✅ Corrected final response structure
+        res.json({ examFeedback, generalFeedback, questionReports }); 
     } catch (error) {
-        console.error(error.message);
+        // ✅ Corrected generic error handling for this function
+        console.error('Get Feedback History Error:', error.message);
         res.status(500).send("Server Error");
     }
+};
+
+// ✅ FIX: Re-adding the missing function definition
+const reportQuestion = async (req, res) => {
+    try {
+        const { questionId, testId, issueType, description } = req.body;
+        const userId = req.user._id;
+
+        const existing = await QuestionReport.findOne({ userId, questionId, status: { $in: ['Pending', 'In Progress'] } });
+        if (existing) {
+            return res.status(400).json({ message: 'You have already reported this question. We are reviewing it.' });
+        }
+
+        const report = new QuestionReport({ userId, questionId, testId, issueType, description });
+        await report.save();
+        res.status(201).json({ message: 'Report submitted successfully.' });
+    } catch (error) {
+        console.error('Report Question Error:', error);
+        res.status(500).json({ message: 'Failed to submit report.' });
+    }
+};
+
+const deleteFeedback = async (req, res) => {
+    try {
+        const feedbackId = req.params.id;
+        const userId = req.user._id;
+
+        // Find report belonging to user AND is pending
+        const report = await QuestionReport.findOneAndDelete({ 
+            _id: feedbackId, 
+            userId: userId,
+            status: 'Pending' 
+        });
+
+        if (!report) {
+            return res.status(404).json({ message: 'Report not found or cannot be deleted (already processed).' });
+        }
+
+        res.json({ message: 'Report deleted successfully.' });
+    } catch (error) {
+        console.error("Delete Feedback Error:", error);
+        res.status(500).json({ message: "Server Error" });
+    }
+};
+
+// --- ADMIN FUNCTIONS ---
+
+const getAllFeedback = async (req, res) => {
+    try {
+        // ✅ Corrected .lean() syntax
+        const examFeedback = await ExamFeedback.find().populate('user', 'name email').populate('test', 'title').sort({ createdAt: -1 }).lean();
+        const generalFeedback = await GeneralFeedback.find().populate('user', 'name email').sort({ createdAt: -1 }).lean();
+        const questionReports = await QuestionReport.find().populate('userId', 'name email').populate('questionId', 'questionText').populate('testId', 'title').sort({ createdAt: -1 }).lean();
+
+        res.json({ examFeedback, generalFeedback, questionReports });
+    } catch (error) {
+        console.error("Admin Fetch Error:", error.message);
+        res.status(500).send("Server Error");
+    }
+};
+
+const updateFeedbackStatus = async (req, res) => {
+    const { status, type, adminResponse } = req.body; 
+    const { id } = req.params;
+
+    try {
+        let Model;
+
+        if (type === 'exam') Model = ExamFeedback;
+        else if (type === 'general') Model = GeneralFeedback;
+        else if (type === 'question') Model = QuestionReport;
+
+        const updateData = { status };
+        if (adminResponse !== undefined) updateData.adminResponse = adminResponse;
+
+        // 1. PERFORM UPDATE AND GET THE UPDATED DOCUMENT
+        let updatedDoc = await Model.findByIdAndUpdate(id, updateData, { new: true });
+
+        if (!updatedDoc) {
+            return res.status(404).json({ message: 'Feedback item not found' });
+        }
+
+        // --- 🔔 SEND NOTIFICATION ---
+        const targetUserId = updatedDoc.userId || updatedDoc.user; 
+        
+        if (targetUserId) {
+            const notification = new Notification({
+                user: targetUserId,
+                message: `Your ${type} report has been marked as ${status}. ${adminResponse ? 'Admin note: ' + adminResponse : ''}`,
+                link: '/user/feedback',
+                type: 'system'
+            });
+            
+            const savedNotification = await notification.save();
+
+            // Real-time socket notification (if user is online)
+            if (req.onlineUsers && req.onlineUsers[targetUserId.toString()]) {
+                const socketId = req.onlineUsers[targetUserId.toString()];
+                req.io.to(socketId).emit("newNotification", savedNotification.toObject());
+            }
+        }
+
+        // 2. RETURN THE UPDATED DOCUMENT (As a plain object)
+        res.json(updatedDoc.toObject()); 
+
+    } catch (error) {
+        console.error("Update Status Error:", error.message);
+        res.status(500).send("Server Error");
+    }
+};
+
+// ✅ EXPORT ALL FUNCTIONS
+module.exports = {
+    submitExamFeedback,
+    submitGeneralFeedback,
+    getMyFeedbackHistory,
+    reportQuestion,
+    getAllFeedback,
+    updateFeedbackStatus,
+    deleteFeedback
 };

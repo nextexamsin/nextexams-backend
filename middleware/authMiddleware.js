@@ -83,12 +83,3 @@ const protectFirebase = asyncHandler(async (req, res, next) => {
 });
 
 module.exports = { protect, adminOnly, protectFirebase };
-
-
-
-
-///////
-
-// Helo
-
-/////////

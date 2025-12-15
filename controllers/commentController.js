@@ -1,48 +1,97 @@
 const Comment = require('../models/Comment.js');
 const asyncHandler = require('express-async-handler');
-const sanitizeHtml = require('sanitize-html'); // Import the sanitizer
+const sanitizeHtml = require('sanitize-html'); 
+const jwt = require('jsonwebtoken'); // ✅ Import JWT for Soft Auth
 
-// --- UTILITY: Configure the sanitizer to strip all HTML ---
 const sanitizeConfig = {
   allowedTags: [],
   allowedAttributes: {},
 };
 
-// @desc    Get all approved comments for a post
-// @route   GET /api/comments/:postId
-// @access  Public
+// @desc    Get comments (Approved for all, + Pending for the author)
+// @route   GET /api/comments/:postId?type=question
+// @access  Public (Soft Auth)
 const getCommentsForPost = asyncHandler(async (req, res) => {
-  // We only fetch comments that have been approved
-  const comments = await Comment.find({ post: req.params.postId, status: 'approved' })
-   .populate('user', 'name _id profilePicture')
+  const { type } = req.query; 
+  const postId = req.params.postId;
+
+  // 1. Determine Context (Question vs Blog Post)
+  let contextQuery = {};
+  if (type === 'question') {
+    contextQuery = { question: postId };
+  } else {
+    contextQuery = { post: postId };
+  }
+
+  // 2. Default Visibility: Only show Approved comments
+  let visibilityQuery = { status: 'approved' };
+
+  // 3. "Soft Auth": Check if user is logged in via cookie
+  // ✅ FIX 1: Check for 'token' (which your logs show) OR 'jwt'
+  const token = req.cookies.token || req.cookies.jwt; 
+
+  if (token) {
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      
+      // ✅ FIX 2: Check for 'id' (from your logs) OR 'userId'
+      const currentUserId = decoded.id || decoded.userId;
+
+      // ✅ LOGIC: Show Approved comments OR Pending comments belonging to ME
+      visibilityQuery = {
+        $or: [
+          { status: 'approved' },
+          { status: 'pending', user: currentUserId } 
+        ]
+      };
+    } catch (error) {
+      console.log("Soft auth failed (Invalid Token):", error.message);
+    }
+  }
+
+  // 4. Combine Context and Visibility
+  const finalQuery = { ...contextQuery, ...visibilityQuery };
+
+  const comments = await Comment.find(finalQuery)
+    .populate('user', 'name _id profilePicture')
     .sort({ createdAt: 'desc' });
 
   res.json(comments);
 });
 
-// @desc    Create a new comment on a post
+// @desc    Create a new comment (with optional images)
 // @route   POST /api/comments/:postId
 // @access  Private
 const createComment = asyncHandler(async (req, res) => {
-  const { content } = req.body;
+  // Extract 'images' and 'type' from body
+  const { content, images, type } = req.body;
 
   if (!content) {
     res.status(400);
     throw new Error('Comment content cannot be empty.');
   }
 
-  // --- SECURITY: Sanitize user input to remove all HTML tags ---
   const sanitizedContent = sanitizeHtml(content, sanitizeConfig);
 
-  const comment = new Comment({
+  // Setup the new comment object
+  const commentData = {
     content: sanitizedContent,
-    post: req.params.postId,
     user: req.user._id,
-    status: 'pending', // All new comments are pending approval
-  });
+    status: 'pending',
+    images: images || [], // Save the image URLs
+  };
+
+  // Link to either Question or Post based on type
+  if (type === 'question') {
+    commentData.question = req.params.postId;
+  } else {
+    commentData.post = req.params.postId;
+  }
+
+  const comment = new Comment(commentData);
 
   const createdComment = await comment.save();
- const populatedComment = await Comment.findById(createdComment._id).populate('user', 'name _id profilePicture');
+  const populatedComment = await Comment.findById(createdComment._id).populate('user', 'name _id profilePicture');
 
   res.status(201).json(populatedComment);
 });
@@ -51,7 +100,7 @@ const createComment = asyncHandler(async (req, res) => {
 // @route   PUT /api/comments/:id
 // @access  Private
 const updateComment = asyncHandler(async (req, res) => {
-  const { content } = req.body;
+  const { content, images } = req.body; // ✅ 1. Extract 'images'
   const comment = await Comment.findById(req.params.id);
 
   if (!comment) {
@@ -59,17 +108,34 @@ const updateComment = asyncHandler(async (req, res) => {
     throw new Error('Comment not found');
   }
 
-  // --- SECURITY: Check if the user owns the comment ---
   if (comment.user.toString() !== req.user._id.toString()) {
     res.status(401);
     throw new Error('User not authorized to update this comment');
   }
 
   const sanitizedContent = sanitizeHtml(content, sanitizeConfig);
-  comment.content = sanitizedContent || comment.content;
+
+  // ✅ 2. Check if Images have changed
+  // We compare the new 'images' array with the existing 'comment.images'
+  const currentImages = comment.images || [];
+  const newImages = images || [];
+  
+  // Simple check: if lengths differ or values differ, it changed.
+  const imagesChanged = 
+    currentImages.length !== newImages.length || 
+    !currentImages.every((img, i) => img === newImages[i]);
+
+  // ✅ 3. Logic: If text OR images changed, update and set to Pending
+  if (sanitizedContent !== comment.content || imagesChanged) {
+      comment.content = sanitizedContent;
+      if (images) comment.images = images; // Update the image
+      comment.status = 'pending'; 
+  }
   
   const updatedComment = await comment.save();
-  const populatedComment = await Comment.findById(updatedComment._id).populate('user', 'name');
+  
+  const populatedComment = await Comment.findById(updatedComment._id)
+    .populate('user', 'name _id profilePicture');
 
   res.json(populatedComment);
 });
@@ -85,7 +151,6 @@ const deleteComment = asyncHandler(async (req, res) => {
     throw new Error('Comment not found');
   }
 
-  // --- SECURITY: User can delete their own comment, or an admin can delete any comment ---
   if (comment.user.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
     res.status(401);
     throw new Error('User not authorized to delete this comment');
@@ -99,10 +164,13 @@ const deleteComment = asyncHandler(async (req, res) => {
 // @route   GET /api/comments/admin/pending
 // @access  Private/Admin
 const getPendingComments = asyncHandler(async (req, res) => {
-    const comments = await Comment.find({ status: 'pending' })
-      .populate('user', 'name')
-      .populate('post', 'title') // also show which post it's on
-      .sort({ createdAt: 'asc' });
+    const comments = await Comment.find({ 
+        status: { $in: ['pending', 'approved'] } 
+    })
+      .populate('user', 'name profilePicture') 
+      .populate('post', 'title slug') 
+      .populate('question') 
+      .sort({ createdAt: 'desc' }); // Newest first
     res.json(comments);
 });
 

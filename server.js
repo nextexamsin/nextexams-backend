@@ -2,7 +2,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const cookieParser = require('cookie-parser'); // <--- 1. ADDED THIS IMPORT
+const cookieParser = require('cookie-parser'); 
 const dotenv = require('dotenv');
 dotenv.config();
 
@@ -82,14 +82,40 @@ const server = http.createServer(app);
 
 // --- SECURITY & MIDDLEWARE CONFIGURATION ---
 app.set('trust proxy', 1);
+
+// ✅ UPDATED HELMET CONFIGURATION (Fixes Cloudinary CSP Error)
 app.use(
     helmet({
-        contentSecurityPolicy: false,
+        contentSecurityPolicy: {
+            directives: {
+                defaultSrc: ["'self'"],
+                // Allow connections to your API, Firebase, and Cloudinary
+                connectSrc: [
+                    "'self'",
+                    "https://api.nextexams.in",
+                    "wss://api.nextexams.in",
+                    "https://identitytoolkit.googleapis.com",
+                    "https://securetoken.googleapis.com",
+                    "https://api.cloudinary.com" // <--- ALLOW CLOUDINARY UPLOAD
+                ],
+                // Allow images from your server, Cloudinary, and Google (profile pics)
+                imgSrc: [
+                    "'self'",
+                    "data:",
+                    "blob:",
+                    "https://res.cloudinary.com", // <--- ALLOW CLOUDINARY IMAGES
+                    "https://lh3.googleusercontent.com"
+                ],
+                scriptSrc: ["'self'", "'unsafe-inline'"],
+                styleSrc: ["'self'", "'unsafe-inline'"],
+            },
+        },
     })
 );
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(cookieParser()); // <--- 2. ADDED COOKIE PARSER MIDDLEWARE
+app.use(cookieParser()); 
 
 // --- DYNAMIC CORS POLICY ---
 const allowedOrigins = [
@@ -111,7 +137,7 @@ const corsOptions = {
             callback(new Error('The CORS policy for this site does not allow access from your origin.'));
         }
     },
-    credentials: true, // Allows cookies to be shared
+    credentials: true, 
 };
 
 app.use(cors(corsOptions));

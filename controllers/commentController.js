@@ -2,10 +2,40 @@ const Comment = require('../models/Comment.js');
 const asyncHandler = require('express-async-handler');
 const sanitizeHtml = require('sanitize-html'); 
 const jwt = require('jsonwebtoken'); // ✅ Import JWT for Soft Auth
+const cloudinary = require('cloudinary').v2; // ✅ 1. Import Cloudinary
+
+// ✅ 2. Configure Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
 const sanitizeConfig = {
   allowedTags: [],
   allowedAttributes: {},
+};
+
+// ✅ 3. HELPER: Extract Public ID from Cloudinary URL
+const getPublicIdFromUrl = (url) => {
+    try {
+        if (!url) return null;
+        // Cloudinary URL format: .../upload/v1234567890/folder/filename.jpg
+        const splitUrl = url.split('/');
+        const lastSegment = splitUrl.pop(); // filename.jpg
+        const filename = lastSegment.split('.')[0]; // filename
+        const folder = splitUrl.pop(); // folder (or 'upload' if no folder)
+        
+        // If the folder is 'upload' or a version number (v123...), it's likely root
+        if (folder === 'upload' || /^v\d+$/.test(folder)) {
+             return filename;
+        }
+        // Otherwise return folder/filename
+        return `${folder}/${filename}`;
+    } catch (error) {
+        console.error("Error extracting public ID:", error);
+        return null;
+    }
 };
 
 // @desc    Get comments (Approved for all, + Pending for the author)
@@ -100,7 +130,7 @@ const createComment = asyncHandler(async (req, res) => {
 // @route   PUT /api/comments/:id
 // @access  Private
 const updateComment = asyncHandler(async (req, res) => {
-  const { content, images } = req.body; // ✅ 1. Extract 'images'
+  const { content, images } = req.body; 
   const comment = await Comment.findById(req.params.id);
 
   if (!comment) {
@@ -115,20 +145,38 @@ const updateComment = asyncHandler(async (req, res) => {
 
   const sanitizedContent = sanitizeHtml(content, sanitizeConfig);
 
-  // ✅ 2. Check if Images have changed
-  // We compare the new 'images' array with the existing 'comment.images'
+  // 1. Identify Changed Images
   const currentImages = comment.images || [];
   const newImages = images || [];
   
-  // Simple check: if lengths differ or values differ, it changed.
   const imagesChanged = 
     currentImages.length !== newImages.length || 
     !currentImages.every((img, i) => img === newImages[i]);
 
-  // ✅ 3. Logic: If text OR images changed, update and set to Pending
+  // ✅ 2. FIX: Delete Removed Images from Cloudinary
+  if (imagesChanged) {
+      // Find images that were in the DB (currentImages) but are NOT in the new request (newImages)
+      const imagesToDelete = currentImages.filter(img => !newImages.includes(img));
+      
+      if (imagesToDelete.length > 0) {
+          console.log(`Deleting ${imagesToDelete.length} replaced/removed images from Cloudinary.`);
+          for (const imgUrl of imagesToDelete) {
+              const publicId = getPublicIdFromUrl(imgUrl);
+              if (publicId) {
+                  try {
+                      await cloudinary.uploader.destroy(publicId);
+                  } catch (err) {
+                      console.error("Cloudinary Delete Error:", err);
+                  }
+              }
+          }
+      }
+  }
+
+  // 3. Update Database
   if (sanitizedContent !== comment.content || imagesChanged) {
       comment.content = sanitizedContent;
-      if (images) comment.images = images; // Update the image
+      if (images) comment.images = images; 
       comment.status = 'pending'; 
   }
   
@@ -156,8 +204,49 @@ const deleteComment = asyncHandler(async (req, res) => {
     throw new Error('User not authorized to delete this comment');
   }
 
+  // ✅ 4. CLEANUP: Delete Images from Cloudinary before deleting comment
+  if (comment.images && comment.images.length > 0) {
+      for (const imgUrl of comment.images) {
+          const publicId = getPublicIdFromUrl(imgUrl);
+          if (publicId) {
+              try {
+                  await cloudinary.uploader.destroy(publicId);
+              } catch (err) {
+                  console.error("Failed to delete image from Cloudinary:", err);
+              }
+          }
+      }
+  }
+
   await comment.deleteOne();
   res.json({ message: 'Comment removed' });
+});
+
+// @desc    (NEW) Delete an image directly (e.g. User cancels upload)
+// @route   POST /api/comments/delete-image
+// @access  Private
+const deleteImageFile = asyncHandler(async (req, res) => {
+    const { imageUrl } = req.body;
+    
+    if (!imageUrl) {
+        res.status(400);
+        throw new Error('No image URL provided');
+    }
+
+    const publicId = getPublicIdFromUrl(imageUrl);
+    if (publicId) {
+        try {
+            await cloudinary.uploader.destroy(publicId);
+            res.json({ message: 'Image deleted from cloud' });
+        } catch (error) {
+            console.error("Cloudinary Delete Error:", error);
+            res.status(500);
+            throw new Error('Failed to delete image from cloud');
+        }
+    } else {
+        res.status(400);
+        throw new Error('Invalid image URL');
+    }
 });
 
 // @desc    (ADMIN) Get all pending comments
@@ -194,6 +283,7 @@ module.exports = {
   createComment,
   updateComment,
   deleteComment,
+  deleteImageFile, // ✅ Exported new function
   getPendingComments,
   approveComment,
 };

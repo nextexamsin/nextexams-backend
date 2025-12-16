@@ -252,6 +252,16 @@ const verifyOtpAndLogin = async (req, res) => {
         user.emailOtp = undefined;
         user.emailOtpExpires = undefined;
         await user.save();
+
+        res.cookie('token', generateToken(res, user), {
+    domain: '.nextexams.in',      // ← KEY: Subdomain cookie
+    httpOnly: true,
+    secure: true,
+    sameSite: 'Lax',
+    path: '/',
+    maxAge: 24 * 60 * 60 * 1000   // 24 hours
+});
+
         
         // --- FINALIZED RESPONSE ---
         // Return the user data along with the crucial isProfileComplete flag
@@ -321,6 +331,17 @@ const googleAuthCallback = async (req, res) => {
             user.profilePicture = user.profilePicture || picture;
             await user.save();
         }
+
+
+        res.cookie('token', generateToken(res, user), {
+    domain: '.nextexams.in',      // ← KEY: Subdomain cookie
+    httpOnly: true,
+    secure: true,
+    sameSite: 'Lax',
+    path: '/',
+    maxAge: 24 * 60 * 60 * 1000   // 24 hours
+});
+
 
         // Return the unified response
         res.status(200).json({

@@ -667,8 +667,6 @@ export const saveTestProgress = async (req, res) => {
       a => a.userId.toString() === userId.toString() && !a.isCompleted
     );
 
-    // If no attempt found, it implies the test is either not started OR already completed.
-    // We return 403 to indicate the action is forbidden on a closed test.
     if (!attempt) {
         return res.status(403).json({ message: 'Cannot save. Attempt not active or already submitted.' });
     }
@@ -707,11 +705,17 @@ export const saveTestProgress = async (req, res) => {
         if (existing) {
           existing.selectedOptions = newAns.selectedOptions;
           existing.timeTaken = newAns.timeTaken || 0;
+          // ✅ NEW: Save Marked and Visited status
+          existing.isMarked = newAns.isMarked;
+          existing.isVisited = newAns.isVisited;
         } else {
           attempt.answers.push({
             questionId: newAns.questionId,
             selectedOptions: newAns.selectedOptions,
             timeTaken: newAns.timeTaken || 0,
+            // ✅ NEW: Save Marked and Visited status on new entry
+            isMarked: newAns.isMarked || false,
+            isVisited: newAns.isVisited || true
           });
         }
       });

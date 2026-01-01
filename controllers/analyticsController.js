@@ -1,25 +1,45 @@
 const { BetaAnalyticsDataClient } = require('@google-analytics/data');
 const path = require('path');
+const fs = require('fs');
 
-// --- 1. Initialize Client safely from FILE ---
+// --- 1. Initialize Client Safely (Smart Path Detection) ---
 let analyticsDataClient;
 try {
-    // Points to: nextExams-backend/config/google-analytics-key.json
-    const keyPath = path.join(__dirname, '../config/google-analytics-key.json');
+    // Define both possible paths
+    // Render automatically puts Secret Files in /etc/secrets/
+    const renderPath = '/etc/secrets/google-analytics-key.json'; 
+    // Local development path
+    const localPath = path.join(__dirname, '../config/google-analytics-key.json'); 
+
+    let keyPath;
+
+    // Check which file exists
+    if (fs.existsSync(renderPath)) {
+        keyPath = renderPath;
+        console.log("✅ Analytics: Using Render Secret File");
+    } else if (fs.existsSync(localPath)) {
+        keyPath = localPath;
+        console.log("✅ Analytics: Using Local Config File");
+    } else {
+        throw new Error("Analytics key file not found in config or secrets.");
+    }
     
     analyticsDataClient = new BetaAnalyticsDataClient({
         keyFilename: keyPath,
     });
-    console.log("✅ Analytics Client Initialized from File");
+    console.log("✅ Analytics Client Initialized Successfully");
+
 } catch (error) {
     console.error("❌ Analytics Init Failed:", error.message);
+    // We don't crash the server, just log the error. 
+    // Analytics features will return 503 if accessed.
 }
 
 const propertyId = process.env.GA4_PROPERTY_ID; 
 
 // --- 2. Main Report Function (Historical Data) ---
 const getGA4Report = async (req, res) => {
-    if (!analyticsDataClient) return res.status(503).json({ message: "Analytics not ready." });
+    if (!analyticsDataClient) return res.status(503).json({ message: "Analytics not ready (Key missing)." });
 
     try {
         const { startDate = '30daysAgo', endDate = 'today' } = req.query;
@@ -85,7 +105,6 @@ const getRealtimeReport = async (req, res) => {
         const onlineUsersMap = req.onlineUsers || {};
         
         // ✅ FAST MAPPING: Convert Map to lightweight Array (Name & Email only)
-        // This ensures the response is small and loads quickly on the frontend
         const userList = Object.values(onlineUsersMap).map(u => ({
             name: u.name || 'Unknown',
             email: u.email || ''
@@ -103,7 +122,7 @@ const getRealtimeReport = async (req, res) => {
             activeUsers: totalCount,
             registered: registeredCount,
             guests: guestCount,
-            userList: userList // ✅ CRITICAL: Sending the list so the Modal isn't empty
+            userList: userList 
         });
 
     } catch (error) {
@@ -111,7 +130,5 @@ const getRealtimeReport = async (req, res) => {
         res.status(500).json({ message: "Failed to fetch live count" });
     }
 };
-
-module.exports = { getGA4Report, getRealtimeReport };
 
 module.exports = { getGA4Report, getRealtimeReport };

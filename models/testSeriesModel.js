@@ -51,7 +51,10 @@ const userAttemptSchema = new mongoose.Schema({
         {
             questionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Question' },
             selectedOptions: [String],
-            timeTaken: { type: Number }
+            timeTaken: { type: Number },
+            // ✅ NEW FIELDS ADDED HERE
+            isMarked: { type: Boolean, default: false },
+            isVisited: { type: Boolean, default: false }
         }
     ],
     timeLeftInSeconds: { type: Number },
@@ -81,7 +84,6 @@ const testSeriesSchema = new mongoose.Schema({
     },
 
     // ✅ NEW: Level 3 Filter (Subject)
-    // Stores "physics", "gk", etc. directly as a string.
     subject: { 
         type: String, 
         trim: true,
@@ -109,16 +111,15 @@ const testSeriesSchema = new mongoose.Schema({
         type: String,
         enum: ['full-length', 'sectional', 'quiz'],
         default: 'full-length',
-        index: true // ✅ Indexed for faster filtering
+        index: true 
     },
 
     // ✅ NEW: Level 2 Filter (Sub Category)
-    // Stores "5min", "10min", "Mock", "PYQ" directly as a string.
     subCategory: {
         type: String,
         trim: true,
         default: null,
-        index: true // ✅ Indexed for faster filtering
+        index: true 
     },
 
     testDurationInMinutes: { type: Number, default: null },

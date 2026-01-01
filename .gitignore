@@ -8,3 +8,4 @@ node_modules
 # Firebase Admin SDK credentials
 firebase-service-account.json
 config/firebase-service-account.json
+config/google-analytics-key.json

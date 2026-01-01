@@ -1,15 +1,17 @@
+// backend/models/Question.js
 const mongoose = require('mongoose');
 
 // 1. Helper Schema for Localized Text
-// This allows you to add 'bn' (Bengali), 'mr' (Marathi) later without changing the DB structure.
+// ✅ UPDATED: Removed 'required: true' from 'en'. 
+// This allows Explanations to be empty (optional).
 const localizedStringSchema = new mongoose.Schema({
-  en: { type: String, required: true }, // English is mandatory
-  hi: { type: String, default: '' }     // Hindi is optional
+  en: { type: String, default: '' }, 
+  hi: { type: String, default: '' } 
 }, { _id: false });
 
 // 2. Option Schema
 const optionSchema = new mongoose.Schema({
-  label: { type: String, required: true }, // e.g., 'a', 'b', '1', '2'
+  label: { type: String, required: true }, 
   text: { type: localizedStringSchema, default: {} }, 
   image: { type: String } 
 });
@@ -17,7 +19,10 @@ const optionSchema = new mongoose.Schema({
 // 3. Main Question Schema
 const questionSchema = new mongoose.Schema({
   // --- Core Content ---
+  // ✅ We still want Question Text to be mandatory, so we enforce it here if needed, 
+  // but usually Frontend validation handles the "required" aspect for logic.
   questionText: { type: localizedStringSchema, required: true },
+  
   questionImage: { type: String },
   questionType: {
     type: String,
@@ -26,15 +31,23 @@ const questionSchema = new mongoose.Schema({
   },
   options: [optionSchema],
 
+  // --- Link to Passage/Group ---
+  groupId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'QuestionGroup', 
+    default: null 
+  },
+
   // --- Answer & Explanation ---
   correctAnswer: {
-    type: [mongoose.Schema.Types.Mixed], // Array of strings or numbers
+    type: [mongoose.Schema.Types.Mixed], 
     required: true,
     default: []
   },
-  answerMin: { type: Number }, // For numerical range
+  answerMin: { type: Number }, 
   answerMax: { type: Number },
   
+  // ✅ Explanation is now optional because localizedStringSchema no longer requires 'en'
   explanation: { type: localizedStringSchema, default: {} },
   explanationImage: { type: String, default: '' },
 
@@ -62,7 +75,14 @@ const questionSchema = new mongoose.Schema({
     enum: ['draft', 'active', 'archived'],
     default: 'active'
   },
-  // This array tells the frontend which languages are available for this specific question
+  
+  // Support for Reporting Logic
+  reportStatus: {
+    type: String,
+    enum: ['pending', 'in progress', 'resolved', 'dismissed', 'rejected', null],
+    default: null
+  },
+
   availableLanguages: {
     type: [String],
     default: ['en'] 

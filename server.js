@@ -2,7 +2,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const cookieParser = require('cookie-parser'); 
+const cookieParser = require('cookie-parser');
 const dotenv = require('dotenv');
 dotenv.config();
 
@@ -10,8 +10,9 @@ const helmet = require('helmet');
 const http = require('http');
 const { Server } = require('socket.io');
 const admin = require('firebase-admin');
-const { Redis } = require('@upstash/redis'); 
+const { Redis } = require('@upstash/redis');
 const cron = require('node-cron');
+
 
 // --- INITIALIZE FIREBASE ADMIN SDK ---
 try {
@@ -47,7 +48,7 @@ redis.get('ping').then(() => {
 // --- CRON JOB: KEEP REDIS ALIVE ---
 cron.schedule('0 0 * * *', async () => {
     try {
-        await redis.set('heartbeat', 'ok', { ex: 60 }); 
+        await redis.set('heartbeat', 'ok', { ex: 60 });
         console.log('🔔 Daily Cron: Redis Ping successful (Keep-Alive)');
     } catch (err) {
         console.error('❌ Daily Cron: Redis Ping failed:', err.message);
@@ -72,38 +73,57 @@ const feedbackRoutes = require('./routes/feedbackRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const blogRoutes = require('./routes/blogRoutes');
 const commentRoutes = require('./routes/commentRoutes');
+const examCategoryRoutes = require('./routes/examCategoryRoutes');
+const questionGroupRoutes = require('./routes/questionGroupRoutes.js');
+
 const { notFound, errorHandler } = require('./middleware/errorMiddleware.js');
 const { apiLimiter } = require('./utils/rateLimiter');
-const examCategoryRoutes = require('./routes/examCategoryRoutes');
 
-// --- INITIALIZE EXPRESS APP ---
+// --- INITIALIZE EXPRESS APP (FIXED LOCATION) ---
+// This must be declared BEFORE using app.use()
 const app = express();
 const server = http.createServer(app);
 
 // --- SECURITY & MIDDLEWARE CONFIGURATION ---
 app.set('trust proxy', 1);
 
-// ✅ UPDATED HELMET CONFIGURATION (Fixes Cloudinary CSP Error)
+const isbotModule = require('isbot');
+
+// Handle different versions of the library safely
+const isbot = isbotModule.isbot || isbotModule;
+
+app.use((req, res, next) => {
+    const userAgent = req.get('user-agent') || '';
+    
+    // Wrap in try-catch so it NEVER crashes your server
+    try {
+        req.isBot = isbot(userAgent);
+    } catch (err) {
+        req.isBot = false; // Default to false if check fails
+        console.error("Bot Check Failed:", err.message);
+    }
+    next();
+});
+
+// 2. HELMET CONFIGURATION
 app.use(
     helmet({
         contentSecurityPolicy: {
             directives: {
                 defaultSrc: ["'self'"],
-                // Allow connections to your API, Firebase, and Cloudinary
                 connectSrc: [
                     "'self'",
                     "https://api.nextexams.in",
                     "wss://api.nextexams.in",
                     "https://identitytoolkit.googleapis.com",
                     "https://securetoken.googleapis.com",
-                    "https://api.cloudinary.com" // <--- ALLOW CLOUDINARY UPLOAD
+                    "https://api.cloudinary.com"
                 ],
-                // Allow images from your server, Cloudinary, and Google (profile pics)
                 imgSrc: [
                     "'self'",
                     "data:",
                     "blob:",
-                    "https://res.cloudinary.com", // <--- ALLOW CLOUDINARY IMAGES
+                    "https://res.cloudinary.com",
                     "https://lh3.googleusercontent.com"
                 ],
                 scriptSrc: ["'self'", "'unsafe-inline'"],
@@ -115,60 +135,84 @@ app.use(
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(cookieParser()); 
+app.use(cookieParser());
 
 // --- DYNAMIC CORS POLICY ---
 const allowedOrigins = [
-    process.env.CLIENT_URL,       
+    process.env.CLIENT_URL,
     'https://nextexams.in',
     'https://www.nextexams.in',
-    'https://tool.nextexams.in',  
-    'http://localhost:5173',      
-    'http://localhost:5174'       
+    'https://tool.nextexams.in',
+    'http://localhost:5173',
+    'http://localhost:5174'
 ];
 
 const corsOptions = {
     origin: (origin, callback) => {
         if (!origin) return callback(null, true);
-        
         if (allowedOrigins.includes(origin) || /nextexams-.*\.vercel\.app$/.test(origin)) {
             callback(null, true);
         } else {
             callback(new Error('The CORS policy for this site does not allow access from your origin.'));
         }
     },
-    credentials: true, 
+    credentials: true,
 };
 
 app.use(cors(corsOptions));
 
+
+
 // --- SOCKET.IO INTEGRATION ---
 const io = new Server(server, { cors: corsOptions });
 
-let onlineUsers = {};
+let onlineUsers = {}; // Tracks Logged-in Users
+
 io.on('connection', (socket) => {
-    socket.on('addNewUser', (userId) => {
-        if (userId) onlineUsers[userId] = socket.id;
+    // A guest connected!
+    
+    socket.on('addNewUser', (userData) => {
+        // Support both old format (just ID) and new format (Object)
+        const userId = userData?._id || userData;
+        
+        if (userId) {
+            // Store full details if provided, otherwise just ID
+            onlineUsers[userId] = { 
+                socketId: socket.id, 
+                name: userData.name || 'Anonymous',
+                email: userData.email || ''
+            };
+        }
     });
+
     socket.on('disconnect', () => {
         Object.keys(onlineUsers).forEach((userId) => {
-            if (onlineUsers[userId] === socket.id) {
+            // Check socketId inside the object
+            if (onlineUsers[userId].socketId === socket.id) {
                 delete onlineUsers[userId];
             }
         });
     });
 });
 
-// --- INJECT GLOBALS INTO REQUEST (Middleware) ---
+// --- INJECT GLOBALS INTO REQUEST ---
 app.use((req, res, next) => {
     req.io = io;
     req.onlineUsers = onlineUsers;
+    // ✅ NEW: Get total socket connections count
+    req.totalConnections = io.engine.clientsCount; 
     req.redis = redis; 
     next();
 });
 
+
+
 // --- API ROUTES ---
 app.get('/', (req, res) => res.send('✅ NextExams API is running successfully.'));
+
+// (Optional) Add your GA4 Analytics route here if not in adminRoutes
+// app.get('/api/admin/ga4-stats', require('./middleware/authMiddleware').protect, require('./middleware/authMiddleware').adminOnly, require('./controllers/analyticsController').getGeneralStats);
+
 app.use('/api/users', userRoutes);
 app.use('/api/questions', apiLimiter, questionRoutes);
 app.use('/api/testseries', apiLimiter, testSeriesRoutes);
@@ -181,8 +225,9 @@ app.use('/api/notifications', apiLimiter, notificationRoutes);
 app.use('/api/blog', apiLimiter, blogRoutes);
 app.use('/api/comments', commentRoutes);
 app.use('/api/exam-categories', examCategoryRoutes);
+app.use('/api/question-groups', questionGroupRoutes);
 
-// --- CUSTOM ERROR HANDLING MIDDLEWARE ---
+// --- CUSTOM ERROR HANDLING ---
 app.use(notFound);
 app.use(errorHandler);
 

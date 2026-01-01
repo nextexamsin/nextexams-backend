@@ -46,37 +46,17 @@ export const createQuestion = async (req, res) => {
 };
 
 // GET - Get all questions with optional filters
+// GET - Get all questions with optional filters
 export const getQuestions = async (req, res) => {
   try {
     const { search, subject, exam, type, difficulty, chapter, topic, tags } = req.query;
     const filter = {};
 
-    // ✅ FIXED: Robust Search for Hybrid Data (Strings & Objects)
-    if (search) {
-        // Create a regex for case-insensitive search
-        const searchRegex = { $regex: search, $options: 'i' };
-        
-        filter.$or = [
-            // Search in English Text
-            { 'questionText.en': searchRegex },
-            // Search in Hindi Text
-            { 'questionText.hi': searchRegex },
-            // Optional: Search in Subject or Exam tags if you want broader search
-            { 'subject': searchRegex },
-            { 'exam': searchRegex }
-        ];
-    }
-
-    if (subject) filter.subject = subject;
-    if (exam) filter.exam = exam;
-    if (type) filter.questionType = type;
-    if (difficulty) filter.difficulty = difficulty;
-    if (chapter) filter.chapter = chapter;
-    if (topic) filter.topic = topic;
-    if (tags) filter.tags = { $in: tags.split(',') }; 
+    // ... (keep your existing filter logic)
 
     const questions = await Question.find(filter)
       .populate('createdBy', 'name email')
+      .populate('groupId') // 🔥 ADD THIS LINE
       .sort({ createdAt: -1 });
       
     res.json(questions);
@@ -90,25 +70,16 @@ export const getQuestions = async (req, res) => {
 export const getQuestionById = async (req, res) => {
   try {
     const { id } = req.params;
-    const question = await Question.findById(id).populate('createdBy', 'name email').lean();
+    // 🔥 ADD .populate('groupId') BEFORE .lean()
+    const question = await Question.findById(id)
+      .populate('createdBy', 'name email')
+      .populate('groupId') 
+      .lean();
 
     if (!question) return res.status(404).json({ error: 'Question not found' });
 
     let reportStatus = null;
-
-    if (req.user) {
-        const userId = req.user._id || req.user.id;
-
-        // 2. CRITICAL FIX: Explicitly cast IDs to ObjectId
-        const report = await QuestionReport.findOne({
-            userId: new mongoose.Types.ObjectId(userId), 
-            questionId: new mongoose.Types.ObjectId(question._id)
-        }).select('status').lean();
-
-        if (report) {
-            reportStatus = report.status; // e.g., 'pending'
-        }
-    }
+    // ... (keep your existing reportStatus logic)
 
     res.json({ ...question, reportStatus });
 
@@ -120,15 +91,18 @@ export const getQuestionById = async (req, res) => {
 
 
 // PUT - Update a question
+// PUT - Update a question
 export const updateQuestion = async (req, res) => {
   try {
-    // Recalculate languages on update based on the incoming data
     const updateData = {
       ...req.body,
       availableLanguages: getAvailableLanguages(req.body)
     };
 
-    const updated = await Question.findByIdAndUpdate(req.params.id, updateData, { new: true });
+    // 🔥 ADD .populate('groupId') to the execution
+    const updated = await Question.findByIdAndUpdate(req.params.id, updateData, { new: true })
+      .populate('groupId'); 
+
     if (!updated) return res.status(404).json({ error: 'Question not found' });
     res.json(updated);
   } catch (err) {

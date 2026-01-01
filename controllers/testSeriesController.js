@@ -2,6 +2,7 @@
 import mongoose from 'mongoose';
 import xlsx from 'xlsx';
 import Question from '../models/Question.js';
+import QuestionGroup from '../models/QuestionGroup.js';
 import TestSeries from '../models/testSeriesModel.js';
 import TestSeriesGroup from '../models/testSeriesGroupModel.js'
 import User from '../models/User.js';
@@ -13,7 +14,11 @@ import calcScore from '../utils/calcScore.js';
 const detailedQuestionPopulation = {
   path: 'sections.questions',
   model: 'Question',
-  select: 'questionType correctAnswer answerMin answerMax marks negativeMarks'
+  select: 'questionType correctAnswer answerMin answerMax marks negativeMarks groupId', // Added groupId
+  populate: {
+    path: 'groupId', // This fetches the actual Passage Text from QuestionGroup model
+    select: 'directionText directionImage type'
+  }
 };
 
 
@@ -21,17 +26,20 @@ export const createTestSeries = async (req, res) => {
     try {
         const { sections, testDurationInMinutes } = req.body;
 
-        // Auto-calculate duration if not provided
         if (!testDurationInMinutes && sections?.length > 0) {
             req.body.testDurationInMinutes = sections.reduce((sum, sec) => {
                 return sum + (Number(sec.durationInMinutes) || 0);
             }, 0);
         }
 
-        // Create the test (req.body now includes 'subCategory' and 'subject' from frontend)
         const test = new TestSeries(req.body);
 
-        await test.populate('sections.questions');
+        // Populate to calculate score
+        await test.populate({
+            path: 'sections.questions',
+            select: 'questionType marks'
+        });
+        
         const { total } = calcScore([], test);
         test.totalMarks = total;
 
@@ -258,47 +266,94 @@ export const bulkUploadTestSeries = async (req, res) => {
         // Helper to safely get strings
         const getVal = (row, key) => (row[key] !== undefined ? String(row[key]).trim() : '');
 
-        const questionsToCreate = questionsJSON.map(q => ({
-            // ✅ Updated for Multilingual Structure
-            questionText: {
-                en: getVal(q, 'Question Text (English)') || getVal(q, 'Question Text'),
-                hi: getVal(q, 'Question Text (Hindi)') || ''
-            },
-            questionImage: getVal(q, 'Question Image') || null,
-            explanationImage: getVal(q, 'Explanation Image') || null,
-            questionType: getVal(q, 'Question Type')?.toLowerCase() || 'mcq',
-            
-            // ✅ Updated Options for Multilingual
-            options: ['A', 'B', 'C', 'D', 'E'].map(opt => {
-                const textEn = getVal(q, `Option ${opt} (English)`) || getVal(q, `Option ${opt}`);
-                const textHi = getVal(q, `Option ${opt} (Hindi)`);
-                
-                if (!textEn) return null; // Skip if English text missing
-                
-                return { 
-                    label: opt, 
-                    text: { en: textEn, hi: textHi || '' } 
-                };
-            }).filter(Boolean), // Remove null options
+        // -------------------------------------------------------------
+        // ✅ 1. PROCESS PASSAGES (Group Creation)
+        // -------------------------------------------------------------
+        // We scan all rows. If 'Passage Title' exists, we verify if it exists in DB.
+        // If not, we create it.
+        // We use a Map to avoid duplicate DB calls for the same passage in this file.
+        const passageMap = new Map(); // Title -> GroupID
 
-            correctAnswer: getVal(q, 'Correct Answer').split(',').map(s => s.trim()),
-            
-            // ✅ Updated Explanation
-            explanation: {
-                en: getVal(q, 'Explanation (English)') || getVal(q, 'Explanation'),
-                hi: getVal(q, 'Explanation (Hindi)') || ''
-            },
+        for (const q of questionsJSON) {
+            const passageTitle = getVal(q, 'Passage Title');
+            if (passageTitle && !passageMap.has(passageTitle)) {
+                // Check DB first
+                let group = await QuestionGroup.findOne({ title: passageTitle }).session(session);
+                
+                if (!group) {
+                    // Create new passage if text is provided
+                    const passageTextEn = getVal(q, 'Passage Text (English)') || getVal(q, 'Passage Text');
+                    
+                    if (passageTextEn) {
+                        group = new QuestionGroup({
+                            title: passageTitle,
+                            type: 'Comprehension',
+                            directionText: {
+                                en: passageTextEn,
+                                hi: getVal(q, 'Passage Text (Hindi)') || ''
+                            },
+                            directionImage: getVal(q, 'Passage Image') || ''
+                        });
+                        await group.save({ session });
+                    }
+                }
+                
+                if (group) {
+                    passageMap.set(passageTitle, group._id);
+                }
+            }
+        }
 
-            exam: details['Exam'],
-            subject: getVal(q, 'Subject'),
-            chapter: getVal(q, 'Chapter'),
-            topic: getVal(q, 'Topic'),
-            difficulty: getVal(q, 'Difficulty')?.toLowerCase() || 'medium',
-            answerMin: q['Answer Min (Numerical)'] || undefined,
-            answerMax: q['Answer Max (Numerical)'] || undefined,
-            
-            tags: [getVal(q, 'Subject'), getVal(q, 'Chapter'), details.Exam].filter(Boolean)
-        }));
+        // -------------------------------------------------------------
+        // ✅ 2. PREPARE QUESTIONS (With Group Linking)
+        // -------------------------------------------------------------
+        const questionsToCreate = questionsJSON.map(q => {
+            const passageTitle = getVal(q, 'Passage Title');
+            const linkedGroupId = passageMap.get(passageTitle) || null;
+
+            return {
+                questionText: {
+                    en: getVal(q, 'Question Text (English)') || getVal(q, 'Question Text'),
+                    hi: getVal(q, 'Question Text (Hindi)') || ''
+                },
+                questionImage: getVal(q, 'Question Image') || null,
+                explanationImage: getVal(q, 'Explanation Image') || null,
+                questionType: getVal(q, 'Question Type')?.toLowerCase() || 'mcq',
+                
+                options: ['A', 'B', 'C', 'D', 'E'].map(opt => {
+                    const textEn = getVal(q, `Option ${opt} (English)`) || getVal(q, `Option ${opt}`);
+                    const textHi = getVal(q, `Option ${opt} (Hindi)`);
+                    
+                    if (!textEn && !getVal(q, `Option ${opt} Image`)) return null; // Skip if empty
+                    
+                    return { 
+                        label: opt, 
+                        text: { en: textEn, hi: textHi || '' },
+                        image: getVal(q, `Option ${opt} Image`) || ''
+                    };
+                }).filter(Boolean),
+
+                correctAnswer: getVal(q, 'Correct Answer').split(',').map(s => s.trim()),
+                
+                explanation: {
+                    en: getVal(q, 'Explanation (English)') || getVal(q, 'Explanation'),
+                    hi: getVal(q, 'Explanation (Hindi)') || ''
+                },
+
+                exam: details['Exam'],
+                subject: getVal(q, 'Subject'),
+                chapter: getVal(q, 'Chapter'),
+                topic: getVal(q, 'Topic'),
+                difficulty: getVal(q, 'Difficulty')?.toLowerCase() || 'medium',
+                answerMin: q['Answer Min (Numerical)'] || undefined,
+                answerMax: q['Answer Max (Numerical)'] || undefined,
+                
+                tags: [getVal(q, 'Subject'), getVal(q, 'Chapter'), details.Exam].filter(Boolean),
+                
+                // ✅ LINK THE QUESTION TO THE PASSAGE
+                groupId: linkedGroupId 
+            };
+        });
         
         const createdQuestionDocs = await Question.insertMany(questionsToCreate, { session });
 
@@ -323,8 +378,6 @@ export const bulkUploadTestSeries = async (req, res) => {
             releaseDate: details['Release Date'] ? new Date(details['Release Date']) : null,
             sections: finalSections,
             groupId: groupId || null,
-
-            // ✅ NEW: Map Excel Columns to Model Fields
             filter1: details['Filter Category'] ? String(details['Filter Category']).trim() : null,
             subCategory: details['Sub Category'] ? String(details['Sub Category']).trim() : null, 
             subject: details['Subject Filter'] ? String(details['Subject Filter']).trim().toLowerCase() : null
@@ -398,12 +451,17 @@ export const getAllTestSeries = async (req, res) => {
 };
 
 
+
 // GET: Single test series by ID
 export const getTestSeriesById = async (req, res) => {
     try {
         const test = await TestSeries.findById(req.params.id)
-            // 👇 UPDATE THIS LINE
-            .populate('sections.questions', 'questionText questionImage options correctAnswer explanation explanationImage questionType') 
+            // 👇 UPDATE THIS BLOCK
+            .populate({
+                path: 'sections.questions',
+                select: 'questionText questionImage options correctAnswer explanation explanationImage questionType groupId', // Added groupId
+                populate: { path: 'groupId' } // Nested populate to get the Passage
+            })
             .populate('attempts.userId', 'name email');
             
         if (!test) return res.status(404).json({ error: 'TestSeries not found' });
@@ -524,7 +582,6 @@ export const startTestSecure = async (req, res) => {
     if (!test) return res.status(404).json({ message: 'Test not found' });
 
     // 1. Fetch User to check Prime Status
-    // We need to check passExpiry to know if they are a "Normal" or "Prime" user
     const user = await User.findById(userId).select('passExpiry role');
     const isPrime = user.passExpiry && new Date(user.passExpiry) > new Date();
     const isAdmin = user.role === 'admin';
@@ -536,13 +593,11 @@ export const startTestSecure = async (req, res) => {
     // Check for active session (Single Session Rule)
     let existingAttempt = test.attempts.find(a => !a.isCompleted && a.userId.toString() === userId.toString());
 
-
     // ============================================================
-    // 🔒 ACCESS CONTROL LOGIC (Updated)
+    // 🔒 ACCESS CONTROL LOGIC
     // ============================================================
 
     // Rule A: PAID TESTS
-    // If test is Paid, Non-Prime users cannot enter AT ALL.
     if (test.isPaid && !isPrime && !isAdmin) {
         return res.status(403).json({ 
             message: 'This is a Prime Member exclusive test. Please purchase a pass.',
@@ -551,15 +606,12 @@ export const startTestSecure = async (req, res) => {
     }
 
     // Rule B: FREE TESTS - REATTEMPT LIMIT
-    // Normal User: Max 2 Attempts (1st Try + 1 Reattempt)
-    // Prime User: Unlimited
     const MAX_FREE_ATTEMPTS = 2;
 
     if (!test.isPaid && !isPrime && !isAdmin) {
         if (!existingAttempt && completedAttempts.length >= MAX_FREE_ATTEMPTS) {
-            // ✅ CHANGE: Return 200 (OK) so browser doesn't log an error
             return res.status(200).json({ 
-                success: false, // Mark logical failure
+                success: false, 
                 errorType: 'PRIME_LIMIT',
                 message: `You have reached the maximum free attempts for this test. Upgrade to Prime to unlock unlimited reattempts and analytics.`,
                 requiresPrime: true 
@@ -584,7 +636,7 @@ export const startTestSecure = async (req, res) => {
          });
       }
 
-      // Create New Attempt Logic (Passed checks above)
+      // Create New Attempt Logic
       let initialTime = 0;
 
       if (test.allowSectionJump) {
@@ -617,10 +669,15 @@ export const startTestSecure = async (req, res) => {
     }
 
     // Populate and Return Test Data
+    // ✅ UPDATE: Added population for 'groupId' to fetch Passage/Instructions
     const populatedTest = await TestSeries.findById(testId)
       .populate({
         path: 'sections.questions',
-        select: 'questionText questionImage options questionType',
+        select: 'questionText questionImage options questionType groupId', // Added groupId
+        populate: { 
+            path: 'groupId',
+            select: 'directionText directionImage type' // Fetch passage content
+        }
       });
 
     const testObject = populatedTest.toObject(); 
@@ -667,8 +724,6 @@ export const saveTestProgress = async (req, res) => {
       a => a.userId.toString() === userId.toString() && !a.isCompleted
     );
 
-    // If no attempt found, it implies the test is either not started OR already completed.
-    // We return 403 to indicate the action is forbidden on a closed test.
     if (!attempt) {
         return res.status(403).json({ message: 'Cannot save. Attempt not active or already submitted.' });
     }
@@ -707,11 +762,17 @@ export const saveTestProgress = async (req, res) => {
         if (existing) {
           existing.selectedOptions = newAns.selectedOptions;
           existing.timeTaken = newAns.timeTaken || 0;
+          // ✅ NEW: Save Marked and Visited status
+          existing.isMarked = newAns.isMarked;
+          existing.isVisited = newAns.isVisited;
         } else {
           attempt.answers.push({
             questionId: newAns.questionId,
             selectedOptions: newAns.selectedOptions,
             timeTaken: newAns.timeTaken || 0,
+            // ✅ NEW: Save Marked and Visited status on new entry
+            isMarked: newAns.isMarked || false,
+            isVisited: newAns.isVisited || true
           });
         }
       });
@@ -1160,9 +1221,14 @@ export const getSolutionForTest = async (req, res) => {
   const { attemptId } = req.query;
 
   try {
+    // ✅ UPDATE: Added population for 'groupId' here as well
     const testDoc = await TestSeries.findById(testId).populate({
       path: 'sections.questions',
-      select: 'questionText questionImage options correctAnswer questionType explanation explanationImage answerMin answerMax'
+      select: 'questionText questionImage options correctAnswer questionType explanation explanationImage answerMin answerMax groupId', // Added groupId
+      populate: { 
+          path: 'groupId',
+          select: 'directionText directionImage type' // Fetch passage content
+      }
     });
 
     if (!testDoc) {
@@ -1173,7 +1239,7 @@ export const getSolutionForTest = async (req, res) => {
     const test = testDoc.toObject();
     
     // ============================================================
-    // ✅ NEW LOGIC: Inject 'isReported' Flag
+    // ✅ LOGIC: Inject 'isReported' Flag
     // ============================================================
     if (req.user) {
         // 1. Get all question IDs
@@ -1190,8 +1256,7 @@ export const getSolutionForTest = async (req, res) => {
         const reportMap = new Map();
         userReports.forEach(r => reportMap.set(r.questionId.toString(), r.status));
 
-
-        // 4. Loop through and set the flag
+        // 3. Loop through and set the flag
         test.sections.forEach(section => {
             section.questions.forEach(q => {
                 q.reportStatus = reportMap.get(q._id.toString()) || null;

@@ -3,14 +3,13 @@
 const express = require("express");
 const router = express.Router();
 
-// 1. Import User Controllers (REMOVED feedback functions from here)
+// 1. Import User Controllers
 const {
   listUsers,
   getUserDetails,
   toggleBlockUser,
   deleteUser,
   grantPrimeAccess,
-  // createAdmin 
 } = require("../controllers/userController");
 
 // 2. Import Notification Controllers
@@ -20,16 +19,23 @@ const {
   deleteBroadcast 
 } = require("../controllers/notificationController");
 
-// ✅ 3. IMPORT FEEDBACK CONTROLLERS FROM THE CORRECT FILE
+// 3. Import Feedback Controllers
 const { 
   getAllFeedback, 
   updateFeedbackStatus 
 } = require("../controllers/feedbackController");
 
+// ✅ 4. IMPORT ANALYTICS CONTROLLER (New)
+const { getGA4Report, getRealtimeReport } = require("../controllers/analyticsController");
+
 const { protect, adminOnly } = require("../middleware/authMiddleware");
 
 // This protects all routes below it
 router.use(protect, adminOnly);
+
+// --- Analytics Routes (New) ---
+router.get("/ga4-report", getGA4Report);
+router.get("/ga4-realtime", getRealtimeReport);
 
 // --- User Management Routes ---
 router.get("/users", listUsers);
@@ -39,7 +45,6 @@ router.put("/users/:id/prime-access", grantPrimeAccess);
 router.delete("/users/:id", deleteUser);
 
 // --- Feedback Management Routes ---
-// ✅ Updated to use the correct controller functions
 router.get("/feedback", getAllFeedback);
 router.patch("/feedback/:id", updateFeedbackStatus);
 

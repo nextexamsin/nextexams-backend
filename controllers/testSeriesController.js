@@ -951,140 +951,185 @@ const calculateDistributionStats = (scores, totalMarks) => {
 
 
 export const getDetailedResult = async (req, res) => {
-  const userId = req.user._id;
-  const { attemptId } = req.params;
+  const userId = req.user._id;
+  const { attemptId } = req.params;
+  const redis = req.redis;
 
-  try {
-    const test = await TestSeries.findOne({ 'attempts._id': attemptId })
-      .populate({
-        path: 'sections.questions',
-        model: 'Question',
-        select: 'questionType correctAnswer answerMin answerMax marks negativeMarks subject chapter topic'
-      });
+  try {
+    // ---------------------------------------------------------
+    // 1. FETCH STATIC TEST CONTENT (Questions & Marking Scheme)
+    // ---------------------------------------------------------
+    const staticCacheKey = `TEST_STATIC_V1:${attemptId}`; // Using attemptId to infer test, or verify testId logic
+    // Ideally we query by TestID, but here we find by attempt. 
+    // Optimization: Find TestID first (lightweight)
+    const testIdLookup = await TestSeries.findOne({ 'attempts._id': attemptId }).select('_id title totalMarks cutoff tags markingScheme marksPerQuestion').lean();
+    
+    if (!testIdLookup) {
+        return res.status(404).json({ message: 'Test not found for this attempt' });
+    }
+    const testId = testIdLookup._id.toString();
 
-    if (!test) {
-      return res.status(404).json({ message: 'Test not found for this attempt' });
-    }
+    // Now fetch full static details (Questions) with Cache
+    const testCacheKey = `SOLUTION_STATIC_V1:${testId}`;
+    let staticTest = await redis.get(testCacheKey);
 
-    const attempt = test.attempts.find(a => a._id.toString() === attemptId);
-    if (!attempt || !attempt.isCompleted) {
-      return res.status(400).json({ message: 'Attempt not found or not completed' });
-    }
+    if (!staticTest) {
+       staticTest = await TestSeries.findById(testId)
+         .select('-attempts') // ❌ Critical: Exclude attempts array
+         .populate({
+            path: 'sections.questions',
+            model: 'Question',
+            select: 'questionType correctAnswer answerMin answerMax marks negativeMarks subject chapter topic'
+         })
+         .lean();
+       
+       await redis.set(testCacheKey, JSON.stringify(staticTest), { ex: 86400 }); // 24 Hours
+    } else {
+       if (typeof staticTest === 'string') staticTest = JSON.parse(staticTest);
+    }
 
-    const allUsersPerformance = test.attempts
-      .filter(a => a.isCompleted && a.attemptNumber === attempt.attemptNumber)
-      .map(a => {
-        const result = calcScore(a.answers, test);
-        const timeTaken = a.answers.reduce((sum, ans) => sum + (ans.timeTaken || 0), 0);
-        return {
-          userId: a.userId.toString(),
-          ...result,
-          timeTaken,
-        };
-      });
+    // ---------------------------------------------------------
+    // 2. FETCH CURRENT USER'S ATTEMPT
+    // ---------------------------------------------------------
+    // We use projection to fetch ONLY the one specific attempt.
+    const userAttemptDoc = await TestSeries.findOne(
+        { _id: testId },
+        { attempts: { $elemMatch: { _id: attemptId } } }
+    ).lean();
 
-    if (allUsersPerformance.length === 0) {
-        return res.status(404).json({ message: 'No completed attempts found for this test session.' });
-    }
+    const attempt = userAttemptDoc?.attempts?.[0];
+    if (!attempt || !attempt.isCompleted) {
+        return res.status(400).json({ message: 'Attempt not found or not completed' });
+    }
 
-    const userPerformance = allUsersPerformance.find(p => p.userId === userId.toString());
-    if (!userPerformance) {
-        return res.status(404).json({ message: 'Could not find your result in this test session.' });
-    }
+    // ---------------------------------------------------------
+    // 3. LEADERBOARD & STATS (Cached)
+    // ---------------------------------------------------------
+    const leaderboardKey = `LEADERBOARD_V1:${testId}`;
+    let allUsersPerformance = await redis.get(leaderboardKey);
 
-    const topperPerformance = [...allUsersPerformance].sort((a, b) => b.score - a.score)[0];
+    if (!allUsersPerformance) {
+        // Fetch simplified list of scores (Lightweight)
+        const doc = await TestSeries.findById(testId)
+            .select('attempts.userId attempts.score attempts.timeTaken attempts.answers.timeTaken attempts.isCompleted')
+            .lean();
 
-    const totalUsers = allUsersPerformance.length;
-    const avgStats = allUsersPerformance.reduce((acc, curr) => {
-        acc.score += curr.score;
-        acc.timeTaken += curr.timeTaken;
-        acc.accuracy += curr.accuracy;
-        acc.correct += curr.correct;
-        acc.incorrect += curr.incorrect;
-        return acc;
-    }, { score: 0, timeTaken: 0, accuracy: 0, correct: 0, incorrect: 0 });
+        allUsersPerformance = doc.attempts
+            .filter(a => a.isCompleted)
+            .map(a => {
+                // Calculate time taken if not stored explicitly
+                const timeTaken = a.timeTaken || a.answers?.reduce((sum, ans) => sum + (ans.timeTaken || 0), 0) || 0;
+                return {
+                    userId: a.userId.toString(),
+                    score: a.score || 0, // ✅ Use stored score (Fast)
+                    timeTaken,
+                    // We don't recalculate accuracy for everyone to save CPU
+                    accuracy: 0 
+                };
+            })
+            .sort((a, b) => b.score - a.score); // Sort Descending
 
-    const averagePerformance = {
-        avgScore: +(avgStats.score / totalUsers).toFixed(2),
-        avgTime: Math.round(avgStats.timeTaken / totalUsers),
-        avgAccuracy: Math.round(avgStats.accuracy / totalUsers),
-        avgCorrect: +(avgStats.correct / totalUsers).toFixed(2),
-        avgIncorrect: +(avgStats.incorrect / totalUsers).toFixed(2),
-    };
+        // Cache for 10 Minutes
+        await redis.set(leaderboardKey, JSON.stringify(allUsersPerformance), { ex: 600 });
+    } else {
+        if (typeof allUsersPerformance === 'string') allUsersPerformance = JSON.parse(allUsersPerformance);
+    }
 
-    const sortedByScore = allUsersPerformance.map(p => ({ userId: p.userId, score: p.score })).sort((a, b) => b.score - a.score);
-    const userRank = sortedByScore.findIndex(s => s.userId === userId.toString()) + 1;
-    
-  const topUserIds = sortedByScore.slice(0, 10).map(entry => entry.userId);
-const users = await User.find({ _id: { $in: topUserIds } }).select('name');
-const userMap = new Map(users.map(u => [u._id.toString(), u.name]));
+    // ---------------------------------------------------------
+    // 4. CALCULATE USER SPECIFIC METRICS
+    // ---------------------------------------------------------
+    // We do need to calculate detailed accuracy for the CURRENT user
+    const { correct, incorrect, unattempted, score, total, sectionStats, accuracy } = calcScore(attempt.answers, staticTest);
 
-const rankList = sortedByScore.slice(0, 10).map(entry => ({
-    name: userMap.get(entry.userId) || 'Unknown',
-    score: entry.score
-}));
-    
-    const allStudentScores = sortedByScore.map(s => s.score);
-    const { medianScore, marksDistribution } = calculateDistributionStats(allStudentScores, userPerformance.total);
+    const totalUsers = allUsersPerformance.length;
+    const userRank = allUsersPerformance.findIndex(p => p.userId === userId.toString()) + 1;
+    const topperPerformance = allUsersPerformance[0] || { score: 0, timeTaken: 0, accuracy: 0, correct: 0, incorrect: 0 };
 
-    const questionDetails = test.sections.flatMap(section => 
-        section.questions.map(q => {
-            const userAns = attempt.answers.find(a => a.questionId.toString() === q._id.toString());
-            const isAttempted = userAns && userAns.selectedOptions && userAns.selectedOptions.length > 0;
-            let isCorrect = false;
-            if (isAttempted) {
-                if (q.questionType === 'numerical') {
-                    const userAnswer = parseFloat(userAns.selectedOptions[0]);
-                    if (!isNaN(userAnswer) && q.answerMin != null && q.answerMax != null) {
-                        isCorrect = userAnswer >= q.answerMin && userAnswer <= q.answerMax;
-                    }
-                } else {
-                    isCorrect = [...userAns.selectedOptions].sort().join(',') === [...q.correctAnswer].sort().join(',');
-                }
-            }
-            return {
-                questionId: q._id,
-                subject: q.subject,
-                chapter: q.chapter,
-                topic: q.topic,
-                isCorrect,
-                isAttempted
-            };
-        })
-    );
+    // Calculate Averages from Leaderboard
+    const totalScoreSum = allUsersPerformance.reduce((acc, curr) => acc + curr.score, 0);
+    const totalTimeSum = allUsersPerformance.reduce((acc, curr) => acc + curr.timeTaken, 0);
 
-    res.json({
-      testTitle: test.title,
-      userName: req.user.name,
-      scoreSummary: {
-        userScore: userPerformance.score,
-        timeTaken: userPerformance.timeTaken,
-        accuracy: userPerformance.accuracy,
-        correct: userPerformance.correct,
-        incorrect: userPerformance.incorrect,
-        unattempted: userPerformance.unattempted,
-        totalMarks: userPerformance.total,
-        ...averagePerformance,
-        topScore: topperPerformance.score,
-        topTime: topperPerformance.timeTaken,
-        topAccuracy: topperPerformance.accuracy,
-        topCorrect: topperPerformance.correct,
-        topIncorrect: topperPerformance.incorrect,
-      },
-      sectionStats: userPerformance.sectionStats,
-      rank: userRank,
-      rankList,
-      marksDistribution,
-      medianScore,
-      cutoff: test.cutoff || {},
-      questionDetails,
-        tags: test.tags || []
-    });
+    const averagePerformance = {
+        avgScore: +(totalScoreSum / totalUsers).toFixed(2),
+        avgTime: Math.round(totalTimeSum / totalUsers),
+        avgAccuracy: 0, // Simplified to avoid loop
+        avgCorrect: 0,  // Simplified
+        avgIncorrect: 0 // Simplified
+    };
 
-  } catch (err) {
-    console.error('getDetailedResult Error:', err.message);
-    res.status(500).json({ message: 'Error fetching detailed result' });
-  }
+    // ---------------------------------------------------------
+    // 5. RANK LIST & DISTRIBUTION
+    // ---------------------------------------------------------
+    const topUserIds = allUsersPerformance.slice(0, 10).map(entry => entry.userId);
+    const users = await User.find({ _id: { $in: topUserIds } }).select('name');
+    const userMap = new Map(users.map(u => [u._id.toString(), u.name]));
+
+    const rankList = allUsersPerformance.slice(0, 10).map(entry => ({
+        name: userMap.get(entry.userId) || 'Unknown',
+        score: entry.score
+    }));
+
+    const { medianScore, marksDistribution } = calculateDistributionStats(allUsersPerformance.map(s => s.score), total);
+
+    // ---------------------------------------------------------
+    // 6. QUESTION ANALYSIS
+    // ---------------------------------------------------------
+    const questionDetails = staticTest.sections.flatMap(section => 
+        section.questions.map(q => {
+            const userAns = attempt.answers.find(a => a.questionId.toString() === q._id.toString());
+            const isAttempted = userAns && userAns.selectedOptions && userAns.selectedOptions.length > 0;
+            let isCorrect = false;
+            
+            if (isAttempted) {
+                if (q.questionType === 'numerical') {
+                    const userAnswer = parseFloat(userAns.selectedOptions[0]);
+                    if (!isNaN(userAnswer) && q.answerMin != null && q.answerMax != null) {
+                        isCorrect = userAnswer >= q.answerMin && userAnswer <= q.answerMax;
+                    }
+                } else {
+                    isCorrect = [...userAns.selectedOptions].sort().join(',') === [...q.correctAnswer].sort().join(',');
+                }
+            }
+            return {
+                questionId: q._id,
+                subject: q.subject,
+                chapter: q.chapter,
+                topic: q.topic,
+                isCorrect,
+                isAttempted
+            };
+        })
+    );
+
+    res.json({
+      testTitle: staticTest.title,
+      userName: req.user.name,
+      scoreSummary: {
+        userScore: score, // Calculated fresh for precision
+        timeTaken: attempt.answers.reduce((sum, ans) => sum + (ans.timeTaken || 0), 0),
+        accuracy,
+        correct,
+        incorrect,
+        unattempted,
+        totalMarks: total,
+        ...averagePerformance,
+        topScore: topperPerformance.score,
+        topTime: topperPerformance.timeTaken,
+      },
+      sectionStats,
+      rank: userRank,
+      rankList,
+      marksDistribution,
+      medianScore,
+      cutoff: staticTest.cutoff || {},
+      questionDetails,
+      tags: staticTest.tags || []
+    });
+
+  } catch (err) {
+    console.error('getDetailedResult Error:', err.message);
+    res.status(500).json({ message: 'Error fetching detailed result' });
+  }
 };
 
 
@@ -1259,123 +1304,120 @@ export const getUserAttemptForTest = async (req, res) => {
 export const getSolutionForTest = async (req, res) => {
   const { testId } = req.params;
   const { attemptId } = req.query;
+  const redis = req.redis; // Ensure this is available from middleware
 
   try {
-    // ✅ UPDATE: Added population for 'groupId' here as well
-    const testDoc = await TestSeries.findById(testId).populate({
-      path: 'sections.questions',
-      select: 'questionText questionImage options correctAnswer questionType explanation explanationImage answerMin answerMax groupId', // Added groupId
-      populate: { 
-          path: 'groupId',
-          select: 'directionText directionImage type' // Fetch passage content
-      }
-    });
+    // -----------------------------------------------------------
+    // 1. CACHE STRATEGY: Fetch Static Content (Questions, Explanations)
+    // -----------------------------------------------------------
+    // We try to get the "Question Paper" from Redis first.
+    const cacheKey = `SOLUTION_STATIC_V1:${testId}`;
+    let staticTest = await redis.get(cacheKey);
 
-    if (!testDoc) {
-      return res.status(404).json({ message: 'Test not found' });
-    }
+    if (!staticTest) {
+      // ⚠️ Cache Miss: Fetch from DB (Heavy Query)
+      // Note: We EXCLUDE 'attempts' here to save memory.
+      const testDoc = await TestSeries.findById(testId)
+        .select('-attempts') 
+        .populate({
+          path: 'sections.questions',
+          select: 'questionText questionImage options correctAnswer questionType explanation explanationImage answerMin answerMax groupId marks negativeMarks',
+          populate: { path: 'groupId', select: 'directionText directionImage type' }
+        })
+        .lean(); // Use lean() for speed
 
-    // Convert to object so we can modify it
-    const test = testDoc.toObject();
-    
-    // ============================================================
-    // ✅ LOGIC: Inject 'isReported' Flag
-    // ============================================================
-    if (req.user) {
-        // 1. Get all question IDs
-        const allQuestionIds = test.sections.flatMap(section => 
-            section.questions.map(q => q._id)
-        );
+      if (!testDoc) return res.status(404).json({ message: 'Test not found' });
 
-        // 2. Fetch reports for these questions by this user
-        const userReports = await QuestionReport.find({
-            userId: req.user._id,
-            questionId: { $in: allQuestionIds }
-        }).select('questionId status');
-
-        const reportMap = new Map();
-        userReports.forEach(r => reportMap.set(r.questionId.toString(), r.status));
-
-        // 3. Loop through and set the flag
-        test.sections.forEach(section => {
-            section.questions.forEach(q => {
-                q.reportStatus = reportMap.get(q._id.toString()) || null;
-            });
-        });
-    }
-    // ============================================================
-
-    test.sections.forEach(section => {
-      const hasHindi = section.questions.some(q => 
-          (q.questionText?.hi && q.questionText.hi.trim() !== '') ||
-          (q.options && q.options.some(opt => opt.text?.hi && opt.text.hi.trim() !== '')) ||
-          (q.explanation?.hi && q.explanation.hi.trim() !== '')
-      );
-
-      if (hasHindi) {
-          section.languages = ['en', 'hi'];
-      } else {
-          section.languages = ['en'];
-      }
-    });
-
-    const selectedAttempt = test.attempts.find(a => a._id.toString() === attemptId);
-    if (!selectedAttempt) {
-      return res.status(404).json({ message: 'Attempt not found for this test.' });
-    }
-
-    const allAttemptsForThisSession = test.attempts.filter(
-      a => a.isCompleted && a.attemptNumber === selectedAttempt.attemptNumber
-    );
-
-    const questionStats = {};
-
-    test.sections.forEach(section => {
-      section.questions.forEach(q => {
-        const questionId = q._id.toString();
-        let totalTime = 0;
-        let correctCount = 0;
-        let attemptCount = 0;
-
-        allAttemptsForThisSession.forEach(attempt => {
-          const userAnswerObj = attempt.answers.find(ans => ans.questionId.toString() === questionId);
-          if (userAnswerObj && userAnswerObj.selectedOptions.length > 0) {
-            attemptCount++;
-            totalTime += userAnswerObj.timeTaken || 0;
-
-            let isCorrect = false;
-            if (q.questionType === 'numerical') {
-              const userAnswer = parseFloat(userAnswerObj.selectedOptions[0]);
-              if (!isNaN(userAnswer) && q.answerMin != null && q.answerMax != null) {
-                isCorrect = userAnswer >= q.answerMin && userAnswer <= q.answerMax;
-              }
-            } else {
-              const correctAns = q.correctAnswer || [];
-              isCorrect = [...userAnswerObj.selectedOptions].sort().join(',') === [...correctAns].sort().join(',');
-            }
-            if (isCorrect) {
-              correctCount++;
-            }
-          }
-        });
-
-        questionStats[questionId] = {
-          avgTime: attemptCount > 0 ? Math.round(totalTime / attemptCount) : 0,
-          percentCorrect: attemptCount > 0 ? Math.round((correctCount / attemptCount) * 100) : 0,
-        };
+      // Handle Hindi Logic (Static)
+      testDoc.sections.forEach(section => {
+         const hasHindi = section.questions.some(q => 
+            (q.questionText?.hi && q.questionText.hi.trim() !== '') ||
+            (q.options && q.options.some(opt => opt.text?.hi && opt.text.hi.trim() !== '')) ||
+            (q.explanation?.hi && q.explanation.hi.trim() !== '')
+         );
+         section.languages = hasHindi ? ['en', 'hi'] : ['en'];
       });
-    });
 
+      staticTest = testDoc;
+      // Save to Redis for 24 Hours
+      await redis.set(cacheKey, JSON.stringify(staticTest), { ex: 86400 });
+    } else {
+        // Parse if it came from Redis
+        if (typeof staticTest === 'string') staticTest = JSON.parse(staticTest);
+    }
+
+    // -----------------------------------------------------------
+    // 2. FETCH DYNAMIC USER ATTEMPT (Lightweight)
+    // -----------------------------------------------------------
+    // We use projection to fetch ONLY the specific attempt.
+    const attemptDoc = await TestSeries.findOne(
+        { _id: testId },
+        { attempts: { $elemMatch: { _id: attemptId } } } 
+    ).lean();
+
+    if (!attemptDoc || !attemptDoc.attempts || attemptDoc.attempts.length === 0) {
+        return res.status(404).json({ message: 'Attempt not found' });
+    }
+    const selectedAttempt = attemptDoc.attempts[0];
+
+    // -----------------------------------------------------------
+    // 3. STATS STRATEGY (Simplified for Performance)
+    // -----------------------------------------------------------
+    // Calculating "Accuracy %" on the fly for 1000 users is too slow.
+    // Ideally, fetch pre-calculated stats from Redis.
+    // For now, we return empty stats or fetch from cache if available.
+    const statsKey = `TEST_STATS_V1:${testId}`;
+    let questionStats = await redis.get(statsKey);
+    
+    if (!questionStats) {
+        questionStats = {}; // Return empty to avoid timeout
+    } else if (typeof questionStats === 'string') {
+        questionStats = JSON.parse(questionStats);
+    }
+
+    // -----------------------------------------------------------
+    // 4. REPORT STATUS INJECTION
+    // -----------------------------------------------------------
+    if (req.user) {
+       const allQuestionIds = staticTest.sections.flatMap(section => 
+           section.questions.map(q => q._id)
+       );
+       
+       const userReports = await QuestionReport.find({
+           userId: req.user._id,
+           questionId: { $in: allQuestionIds }
+       }).select('questionId status').lean();
+
+       const reportMap = new Map();
+       userReports.forEach(r => reportMap.set(r.questionId.toString(), r.status));
+
+       staticTest.sections.forEach(section => {
+           section.questions.forEach(q => {
+               q.reportStatus = reportMap.get(q._id.toString()) || null;
+           });
+       });
+    }
+
+    // -----------------------------------------------------------
+    // 5. PREPARE RESPONSE
+    // -----------------------------------------------------------
     const responses = {};
     selectedAttempt.answers.forEach(ans => {
-      responses[ans.questionId.toString()] = ans.selectedOptions;
+        responses[ans.questionId.toString()] = ans.selectedOptions;
     });
 
+    // We attach the single attempt to the test object so frontend logic works
+    const finalTest = {
+        ...staticTest,
+        attempts: [selectedAttempt] 
+    };
+
     res.status(200).json({
-      test,
+      test: finalTest,
       responses,
       questionStats,
     });
+
   } catch (err) {
     console.error('Get Solution Error:', err.message);
     res.status(500).json({ message: 'Failed to fetch solution' });

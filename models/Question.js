@@ -93,4 +93,16 @@ const questionSchema = new mongoose.Schema({
   }
 }, { timestamps: true });
 
+
+
+questionSchema.index({ exam: 1, subject: 1, chapter: 1, difficulty: 1 });
+
+
+
+
+questionSchema.index({ questionType: 1 });
+
+
+questionSchema.index({ "questionText.en": "text", "questionText.hi": "text" });
+
 module.exports = mongoose.model('Question', questionSchema);

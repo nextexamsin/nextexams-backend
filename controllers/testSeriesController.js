@@ -496,6 +496,20 @@ export const updateTestSeries = async (req, res) => {
     }
     
     const updatedTest = await testToUpdate.save();
+
+    // ---------------------------------------------------------
+    // 🗑️ CACHE CLEARING LOGIC (The Fix)
+    // ---------------------------------------------------------
+    if (req.redis) {
+        const cacheKey = `TEST_CONTENT_V1:${req.params.id}`;
+        
+        // Delete the key. The next user will trigger a fresh DB fetch.
+        await req.redis.del(cacheKey); 
+        
+        console.log(`✅ Cache Cleared for Test ID: ${req.params.id}`);
+    }
+    // ---------------------------------------------------------
+
     res.json(updatedTest);
 
   } catch (err) {
@@ -531,26 +545,35 @@ export const getFilterOptions = async (req, res) => {
 // In testSeriesController.js
 
 export const deleteTestSeries = async (req, res) => {
-  try {
-    const masterTestId = req.params.id;
+  try {
+    const masterTestId = req.params.id;
 
-    // Step 1: Delete the master test series template
-    const deletedMaster = await TestSeries.findByIdAndDelete(masterTestId);
+    // Step 1: Delete the master test series template
+    const deletedMaster = await TestSeries.findByIdAndDelete(masterTestId);
 
-    if (!deletedMaster) {
-      return res.status(404).json({ error: 'Master TestSeries not found' });
-    }
+    if (!deletedMaster) {
+      return res.status(404).json({ error: 'Master TestSeries not found' });
+    }
 
-    // Step 2: Delete all instances that were cloned from this master
-    // This is the "cascading delete" part.
-    await TestSeries.deleteMany({ originalId: masterTestId });
+    // Step 2: Delete cloned instances
+    await TestSeries.deleteMany({ originalId: masterTestId });
 
-    res.json({ message: 'Master TestSeries and all its instances have been deleted.' });
-    
-  } catch (err) {
-    console.error('Delete TestSeries Error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
+    // ---------------------------------------------------------
+    // 🗑️ CACHE CLEARING LOGIC
+    // ---------------------------------------------------------
+    if (req.redis) {
+        const cacheKey = `TEST_CONTENT_V1:${masterTestId}`;
+        await req.redis.del(cacheKey);
+        console.log(`✅ Cache Cleared (Deleted) for Test ID: ${masterTestId}`);
+    }
+    // ---------------------------------------------------------
+
+    res.json({ message: 'Master TestSeries and all its instances have been deleted.' });
+    
+  } catch (err) {
+    console.error('Delete TestSeries Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 };
 
 
@@ -573,32 +596,72 @@ export const getRecentTestSeriesForUser = async (req, res) => {
 export const startTestSecure = async (req, res) => {
   const userId = req.user._id;
   const { testId, reattempt } = req.body;
+  const redis = req.redis; // ✅ Get Redis from request
 
   try {
-    const test = await TestSeries.findOne({
-      $or: [{ _id: testId }, { originalId: testId }]
-    });
+    // ---------------------------------------------------------
+    // STEP 1: CACHE HIT (Fetch "Heavy" Test Data from Redis)
+    // ---------------------------------------------------------
+    // We cache the Static Data (Questions, Sections, Instructions)
+    const cacheKey = `TEST_CONTENT_V1:${testId}`;
+    let staticTestData = await redis.get(cacheKey);
 
-    if (!test) return res.status(404).json({ message: 'Test not found' });
+    if (!staticTestData) {
+      // ⚠️ Cache Miss: Fetch from DB (Heavy Query) using .lean() for speed
+      console.log(`[Cache Miss] Fetching Test Content for ${testId}`);
+      
+      const testDoc = await TestSeries.findById(testId)
+        .select('title sections testDurationInMinutes allowSectionJump cutoff description exam') // Select only static fields
+        .populate({
+          path: 'sections.questions',
+          select: 'questionText questionImage options questionType groupId marks negativeMarks answerMin answerMax', // Fetch pure data
+          populate: { path: 'groupId', select: 'directionText directionImage type' }
+        })
+        .lean(); // ✅ .lean() makes it 5x faster and lighter on memory
 
-    // 1. Fetch User to check Prime Status
+      if (!testDoc) return res.status(404).json({ message: 'Test not found' });
+
+      // Handle Hindi Logic inside the cache generation
+      testDoc.sections.forEach(section => {
+         const hasHindi = section.questions.some(q => 
+            (q.questionText?.hi && q.questionText.hi.trim() !== '') ||
+            (q.options && q.options.some(opt => opt.text?.hi && opt.text.hi.trim() !== ''))
+         );
+         section.languages = hasHindi ? ['en', 'hi'] : ['en'];
+      });
+
+      staticTestData = testDoc;
+      // ✅ Save to Redis for 24 Hours (86400 seconds)
+      await redis.set(cacheKey, JSON.stringify(testDoc), { ex: 86400 });
+    } else {
+        // Ensure it's an object if Redis returned a string
+        if (typeof staticTestData === 'string') {
+            staticTestData = JSON.parse(staticTestData);
+        }
+    }
+
+    // ---------------------------------------------------------
+    // STEP 2: DB CHECK (Fetch "Dynamic" User Data Only)
+    // ---------------------------------------------------------
+    // We fetch ONLY the user attempts and metadata. No questions. Very fast.
+    const dynamicTestDoc = await TestSeries.findById(testId)
+       .select('attempts isPaid originalId allowSectionJump testDurationInMinutes sections.durationInMinutes'); // Light query
+
+    if (!dynamicTestDoc) return res.status(404).json({ message: 'Test not found (Dynamic)' });
+
+    // ---------------------------------------------------------
+    // STEP 3: ACCESS CONTROL & ATTEMPT LOGIC
+    // ---------------------------------------------------------
     const user = await User.findById(userId).select('passExpiry role');
     const isPrime = user.passExpiry && new Date(user.passExpiry) > new Date();
     const isAdmin = user.role === 'admin';
 
-    // 2. Calculate Attempt History
-    const previousAttempts = test.attempts.filter(a => a.userId.toString() === userId.toString());
+    const previousAttempts = dynamicTestDoc.attempts.filter(a => a.userId.toString() === userId.toString());
     const completedAttempts = previousAttempts.filter(a => a.isCompleted);
-    
-    // Check for active session (Single Session Rule)
-    let existingAttempt = test.attempts.find(a => !a.isCompleted && a.userId.toString() === userId.toString());
-
-    // ============================================================
-    // 🔒 ACCESS CONTROL LOGIC
-    // ============================================================
+    let existingAttempt = dynamicTestDoc.attempts.find(a => !a.isCompleted && a.userId.toString() === userId.toString());
 
     // Rule A: PAID TESTS
-    if (test.isPaid && !isPrime && !isAdmin) {
+    if (dynamicTestDoc.isPaid && !isPrime && !isAdmin) {
         return res.status(403).json({ 
             message: 'This is a Prime Member exclusive test. Please purchase a pass.',
             requiresPrime: true 
@@ -607,27 +670,21 @@ export const startTestSecure = async (req, res) => {
 
     // Rule B: FREE TESTS - REATTEMPT LIMIT
     const MAX_FREE_ATTEMPTS = 2;
-
-    if (!test.isPaid && !isPrime && !isAdmin) {
+    if (!dynamicTestDoc.isPaid && !isPrime && !isAdmin) {
         if (!existingAttempt && completedAttempts.length >= MAX_FREE_ATTEMPTS) {
             return res.status(200).json({ 
                 success: false, 
                 errorType: 'PRIME_LIMIT',
-                message: `You have reached the maximum free attempts for this test. Upgrade to Prime to unlock unlimited reattempts and analytics.`,
+                message: `You have reached the maximum free attempts. Upgrade to Prime.`,
                 requiresPrime: true 
             });
         }
     }
 
-    // ============================================================
-    // 🔒 BACK BUTTON / REFRESH PROTECTION
-    // ============================================================
-    
-    if (existingAttempt) {
-      // Resume existing session - Allow access
-    } 
-    else {
-      // If user has completed attempts and didn't ask for a reattempt, block them.
+    // ---------------------------------------------------------
+    // STEP 4: CREATE OR RESUME ATTEMPT
+    // ---------------------------------------------------------
+    if (!existingAttempt) {
       if (completedAttempts.length > 0 && !reattempt) {
          return res.status(403).json({ 
              message: 'Test already completed.', 
@@ -636,20 +693,19 @@ export const startTestSecure = async (req, res) => {
          });
       }
 
-      // Create New Attempt Logic
+      // Calculate Initial Time (Use cached data structure for duration lookup)
       let initialTime = 0;
-
-      if (test.allowSectionJump) {
-        if (test.testDurationInMinutes && test.testDurationInMinutes > 0) {
-          initialTime = test.testDurationInMinutes * 60;
-        } else {
-          const totalMinutes = test.sections.reduce((acc, sec) => acc + (sec.durationInMinutes || 0), 0);
-          initialTime = totalMinutes * 60;
-        }
+      if (dynamicTestDoc.allowSectionJump) {
+         if (dynamicTestDoc.testDurationInMinutes > 0) {
+            initialTime = dynamicTestDoc.testDurationInMinutes * 60;
+         } else {
+             // Fallback: sum section times from static data
+            initialTime = staticTestData.sections.reduce((acc, sec) => acc + (Number(sec.durationInMinutes) || 0), 0) * 60;
+         }
       } else {
-        if (test.sections && test.sections.length > 0) {
-          initialTime = (test.sections[0].durationInMinutes || 0) * 60;
-        }
+         if (staticTestData.sections && staticTestData.sections.length > 0) {
+            initialTime = (Number(staticTestData.sections[0].durationInMinutes) || 0) * 60;
+         }
       }
 
       const newAttempt = {
@@ -663,42 +719,26 @@ export const startTestSecure = async (req, res) => {
         timeLeftInSeconds: initialTime
       };
 
-      test.attempts.push(newAttempt);
-      await test.save();
-      existingAttempt = test.attempts[test.attempts.length - 1];
+      dynamicTestDoc.attempts.push(newAttempt);
+      await dynamicTestDoc.save(); // ✅ Only saving metadata + attempts
+      existingAttempt = dynamicTestDoc.attempts[dynamicTestDoc.attempts.length - 1];
     }
 
-    // Populate and Return Test Data
-    // ✅ UPDATE: Added population for 'groupId' to fetch Passage/Instructions
-    const populatedTest = await TestSeries.findById(testId)
-      .populate({
-        path: 'sections.questions',
-        select: 'questionText questionImage options questionType groupId', // Added groupId
-        populate: { 
-            path: 'groupId',
-            select: 'directionText directionImage type' // Fetch passage content
-        }
-      });
-
-    const testObject = populatedTest.toObject(); 
-
-    testObject.sections.forEach(section => {
-      const hasHindi = section.questions.some(q => 
-          (q.questionText?.hi && q.questionText.hi.trim() !== '') ||
-          (q.options && q.options.some(opt => opt.text?.hi && opt.text.hi.trim() !== ''))
-      );
-
-      if (hasHindi) {
-          section.languages = ['en', 'hi'];
-      } else {
-          section.languages = ['en'];
-      }
-    });
+    // ---------------------------------------------------------
+    // STEP 5: MERGE & RESPOND
+    // ---------------------------------------------------------
+    // We combine the Static Questions (Redis) with the Dynamic Attempt ID (DB)
+    const finalResponse = {
+        ...staticTestData, // The heavy questions from cache
+        _id: dynamicTestDoc._id, // Ensure ID matches
+        attempts: undefined, // Don't send other users' attempts
+        isPaid: dynamicTestDoc.isPaid
+    };
 
     res.status(200).json({
       message: 'Access granted',
       testId,
-      test: testObject,
+      test: finalResponse, // Sent from Cache! 🚀
       attemptId: existingAttempt._id,
       attempt: existingAttempt
     });

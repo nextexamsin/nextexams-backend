@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const dotenv = require('dotenv');
+const compression = require('compression');
 dotenv.config();
 
 const helmet = require('helmet');
@@ -136,6 +137,17 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
+
+app.use(compression({
+    level: 6, // Balanced setting for speed/compression
+    threshold: 10 * 1000, // Only compress responses larger than 10KB
+    filter: (req, res) => {
+        if (req.headers['x-no-compression']) {
+            return false;
+        }
+        return compression.filter(req, res);
+    }
+}));
 
 // --- DYNAMIC CORS POLICY ---
 const allowedOrigins = [

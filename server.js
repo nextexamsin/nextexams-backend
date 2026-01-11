@@ -217,7 +217,7 @@ app.use((req, res, next) => {
     next();
 });
 
-
+const sitemapController = require('./controllers/sitemapController');
 
 // --- API ROUTES ---
 app.get('/', (req, res) => res.send('✅ NextExams API is running successfully.'));
@@ -238,6 +238,7 @@ app.use('/api/blog', apiLimiter, blogRoutes);
 app.use('/api/comments', commentRoutes);
 app.use('/api/exam-categories', examCategoryRoutes);
 app.use('/api/question-groups', questionGroupRoutes);
+app.get('/sitemap.xml', sitemapController.getSitemap);
 
 // --- CUSTOM ERROR HANDLING ---
 app.use(notFound);

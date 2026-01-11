@@ -16,6 +16,7 @@ const redis = new Redis({
 });
 const { OAuth2Client } = require('google-auth-library');
 const jwt = require('jsonwebtoken');
+const cloudinary = require('cloudinary').v2;
 
 
 
@@ -438,12 +439,42 @@ const updateUserProfile = async (req, res) => {
     const user = await User.findById(req.user._id);
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    const { name, secondName, category } = req.body;
+    // ✅ Destructure profilePicture from body along with existing fields
+    const { name, secondName, category, profilePicture } = req.body;
 
+    // --- 1. Existing Logic (Preserved) ---
     if (name) user.name = name;
     if (secondName !== undefined) user.secondName = secondName;
     if (category && ['UR', 'EWS', 'OBC', 'SC', 'ST'].includes(category)) {
       user.category = category;
+    }
+
+    // --- 2. New Logic: Handle Image Deletion & Update ---
+    if (profilePicture) {
+        // Only trigger deletion if the URL has actually changed
+        if (user.profilePicture !== profilePicture) {
+            
+            // Check if an old image exists and is hosted on Cloudinary
+            if (user.profilePicture && user.profilePicture.includes('cloudinary.com')) {
+                try {
+                    // Extract Public ID (handling folders like 'user_profiles/')
+                    // Matches everything between "/v<version_number>/" and the file extension
+                    const regex = /\/v\d+\/(.+)\.[a-z]+$/;
+                    const match = user.profilePicture.match(regex);
+
+                    if (match && match[1]) {
+                        const publicId = match[1];
+                        await cloudinary.uploader.destroy(publicId);
+                    }
+                } catch (delErr) {
+                    // Log error but don't crash; the new image should still be saved
+                    console.error("Failed to delete old image from Cloudinary:", delErr);
+                }
+            }
+
+            // Save the new URL provided by frontend
+            user.profilePicture = profilePicture;
+        }
     }
 
     await user.save();
@@ -455,6 +486,7 @@ const updateUserProfile = async (req, res) => {
       category: user.category,
       email: user.email,
       role: user.role,
+      profilePicture: user.profilePicture, // ✅ Include updated picture in response
     });
   } catch (err) {
     console.error('Profile update error:', err);
@@ -529,28 +561,104 @@ const listUsers = async (req, res) => {
 
 const getUserDetails = async (req, res) => {
   try {
-    const user = await User.findById(req.params.id).populate('enrolledGroups').populate('savedQuestions');
+    const user = await User.findById(req.params.id)
+      .populate('enrolledGroups')
+      .populate('savedQuestions');
+    
     if (!user) return res.status(404).json({ message: 'User not found' });
+    
     res.json({
       _id: user._id,
       name: user.name,
       secondName: user.secondName,
       email: user.email,
       whatsapp: user.whatsapp,
+      profilePicture: user.profilePicture, // <--- SEND PROFILE PIC
       joinedAt: user.joinedAt,
       isBlocked: user.isBlocked,
+      role: user.role,
       primeAccessUntil: user.primeAccessUntil,
       enrolledGroups: user.enrolledGroups,
       savedQuestions: user.savedQuestions,
+      category: user.category,
+      performance: user.performance, // Ensure performance stats are sent if you have them in DB
+      
+      // --- SECURITY & ADMIN FIELDS ---
+      // Reverse history to show newest changes first
+      contactHistory: user.contactHistory ? user.contactHistory.reverse() : [],
+      adminNotes: user.adminNotes || "" // <--- SEND SAVED NOTES
     });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ message: 'Failed to fetch user details' });
   }
 };
 
-// -------------------------------------------------------------------
-// (No changes needed for the functions below, they remain the same)
-// -------------------------------------------------------------------
+/**
+ * @desc    Admin updates user details directly (Bypasses OTP)
+ * @route   PUT /api/admin/users/:id
+ * @access  Private/Admin
+ */
+const updateUserByAdmin = async (req, res) => {
+    try {
+        const user = await User.findById(req.params.id);
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        const { name, secondName, email, whatsapp, category } = req.body;
+
+        // Track changes for the Audit Log
+        const changes = [];
+        
+        if (email && email !== user.email) {
+            // Check if new email is taken
+            const emailExists = await User.findOne({ email });
+            if (emailExists && emailExists._id.toString() !== user._id.toString()) {
+                return res.status(400).json({ message: 'Email already in use.' });
+            }
+            
+           user.contactHistory.push({
+    changeType: 'email',
+    oldValue: user.email,
+    changedBy: 'admin', 
+    changedAt: new Date()
+});
+            user.email = email;
+            changes.push('Email');
+        }
+
+        if (whatsapp && whatsapp !== user.whatsapp) {
+            // Check if new phone is taken
+            const phoneExists = await User.findOne({ whatsapp });
+            if (phoneExists && phoneExists._id.toString() !== user._id.toString()) {
+                return res.status(400).json({ message: 'Phone already in use.' });
+            }
+
+            user.contactHistory.push({
+                changeType: 'phone',
+                oldValue: user.whatsapp,
+                changedAt: new Date()
+            });
+            user.whatsapp = whatsapp;
+            changes.push('Phone');
+        }
+
+        // Update basic info
+        if (name) user.name = name;
+        if (secondName !== undefined) user.secondName = secondName;
+        if (category) user.category = category;
+
+        await user.save();
+
+        res.json({ 
+            message: `User updated successfully. Changed: ${changes.length > 0 ? changes.join(', ') : 'Details'}`, 
+            user 
+        });
+
+    } catch (err) {
+        console.error("Admin Update Error:", err);
+        res.status(500).json({ message: 'Failed to update user.' });
+    }
+};
 
 const getUserStats = async (req, res) => {
   try {
@@ -805,12 +913,10 @@ const deleteUser = async (req, res) => {
 
 
 /**
- * @desc     Get all profile data for the logged-in user, including test stats.
- * @route    GET /api/users/profile
- * @access   Private
+ * @desc    Get all profile data for the logged-in user, including test stats AND OTP LIMITS.
+ * @route   GET /api/users/profile
+ * @access  Private
  */
-
-
 const getUserProfile = async (req, res) => {
     try {
         const user = await User.findById(req.user._id).lean();
@@ -819,7 +925,12 @@ const getUserProfile = async (req, res) => {
             return res.status(404).json({ message: 'User not found' });
         }
 
-        // We no longer need the 'stats' object
+        // --- NEW: FETCH OTP LIMIT FROM REDIS ---
+        const rateLimitKey = `otp-limit:contact-change:${user._id}`;
+        const currentAttempts = parseInt(await redis.get(rateLimitKey), 10) || 0;
+        const MAX_DAILY_ATTEMPTS = 3;
+        const attemptsLeft = Math.max(0, MAX_DAILY_ATTEMPTS - currentAttempts);
+
         res.json({
             _id: user._id,
             name: user.name,
@@ -831,6 +942,9 @@ const getUserProfile = async (req, res) => {
             passExpiry: user.passExpiry,
             category: user.category || 'UR',
             whatsapp: user.whatsapp || '',
+            
+            // Send the server-side count to the frontend
+            attemptsLeft: attemptsLeft 
         });
     } catch (error) {
         console.error("Get Profile Error:", error);
@@ -1101,6 +1215,35 @@ const initiateContactChange = async (req, res) => {
     }
 
     try {
+        const user = await User.findById(userId);
+        
+        // --- 1. COOLDOWN CHECK (DB Based) ---
+        // Rule: Can only change email once every 30 days
+        if (changeType === 'email' && user.security && user.security.lastEmailChangeDate) {
+            const daysSinceLastChange = (Date.now() - new Date(user.security.lastEmailChangeDate)) / (1000 * 60 * 60 * 24);
+            const COOLDOWN_DAYS = 30;
+            
+            if (daysSinceLastChange < COOLDOWN_DAYS) {
+                const daysLeft = Math.ceil(COOLDOWN_DAYS - daysSinceLastChange);
+                return res.status(403).json({ 
+                    message: `For security, you can only change your email once every ${COOLDOWN_DAYS} days. Please try again in ${daysLeft} days.` 
+                });
+            }
+        }
+
+        // --- 2. DAILY OTP RATE LIMIT CHECK (Redis Based) ---
+        // Rule: Only 3 OTP requests per day for contact changes
+        const rateLimitKey = `otp-limit:contact-change:${userId}`;
+        const currentAttempts = parseInt(await redis.get(rateLimitKey), 10) || 0;
+        const MAX_DAILY_ATTEMPTS = 3;
+
+        if (currentAttempts >= MAX_DAILY_ATTEMPTS) {
+            return res.status(429).json({ 
+                message: `You have reached the maximum of ${MAX_DAILY_ATTEMPTS} OTP requests for today. Please try again in 24 hours.` 
+            });
+        }
+
+        // --- 3. AVAILABILITY CHECK ---
         // Check if the new email or phone is already in use by another account
         const query = (changeType === 'email') ? { email: newValue } : { whatsapp: newValue };
         const existingUser = await User.findOne(query);
@@ -1108,23 +1251,37 @@ const initiateContactChange = async (req, res) => {
             return res.status(400).json({ message: `This ${changeType} is already associated with another account.` });
         }
 
-        const user = await User.findById(userId);
+        // --- 4. GENERATE & SEND ---
         const otp = generateOTP();
 
-        // Send OTP to the NEW contact method
         if (changeType === 'email') {
             await sendEmailWithRateLimit({
                 to: newValue,
                 subject: 'Verify Your New Email Address',
-                html: `<p>Your verification code to change your email is: <strong>${otp}</strong>.</p>`,
+                html: `
+                    <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
+                        <h2>Confirm Email Change</h2>
+                        <p>You requested to change your registered email to <b>${newValue}</b>.</p>
+                        <p>Your Verification Code is:</p>
+                        <h1 style="color: #6d28d9; letter-spacing: 5px;">${otp}</h1>
+                        <p>This code is valid for 10 minutes.</p>
+                        <p style="color: #ef4444; font-size: 12px;">If you did not request this, please ignore this email and secure your account.</p>
+                    </div>
+                `,
             });
         } else {
-            // Placeholder for sending SMS OTP via Firebase/Twilio etc.
-            // For now, we assume this is handled on the frontend for phone changes.
-            return res.status(501).json({ message: "Phone number changes are not yet implemented." });
+            // Placeholder for Phone SMS
+            return res.status(501).json({ message: "Phone number changes via SMS are not yet implemented." });
         }
         
-        // Store the pending change on the user document
+        // --- 5. STORE STATE ---
+        // Increment Redis Counter
+        const newCount = await redis.incr(rateLimitKey);
+        if (newCount === 1) {
+            await redis.expire(rateLimitKey, 24 * 60 * 60); // Expire in 24 hours
+        }
+
+        // Store pending change in DB
         user.pendingContactChange = {
             changeType,
             newValue,
@@ -1133,14 +1290,16 @@ const initiateContactChange = async (req, res) => {
         };
         await user.save();
 
-        res.json({ message: `Verification OTP has been sent to ${newValue}.` });
+        res.json({ 
+            message: `OTP sent to ${newValue}.`,
+            attemptsLeft: MAX_DAILY_ATTEMPTS - newCount 
+        });
 
     } catch (error) {
         console.error("Initiate Contact Change Error:", error);
         res.status(500).json({ message: "Server error while initiating change." });
     }
 };
-
 
 /**
  * @desc    Verifies an OTP to finalize a contact method change
@@ -1168,31 +1327,43 @@ const verifyContactChange = async (req, res) => {
             return res.status(400).json({ message: "Invalid or expired OTP." });
         }
 
-        // Add the old value to history
+        // --- 1. ARCHIVE OLD DATA ---
         user.contactHistory.push({
             changeType,
-            oldValue: user[changeType], // user['email'] or user['whatsapp']
+            oldValue: user[changeType === 'email' ? 'email' : 'whatsapp'],
+            changedBy: 'user', // Explicitly mark as user-initiated
+            changedAt: new Date() 
         });
 
-        // Update the primary contact field
+        // --- 2. UPDATE PRIMARY DATA ---
         if (changeType === 'email') {
             user.email = newValue;
+            // UPDATE SECURITY TIMESTAMP
+            if (!user.security) user.security = {};
+            user.security.lastEmailChangeDate = new Date();
         } else if (changeType === 'phone') {
             user.whatsapp = newValue;
-            // You might need to update firebaseUid here as well if the new number is verified via Firebase
+            if (!user.security) user.security = {};
+            user.security.lastPhoneChangeDate = new Date();
         }
         
-        // Clear the pending change
+        // --- 3. CLEANUP ---
         user.pendingContactChange = undefined;
         await user.save();
 
-        // Return the full, updated profile
+        // --- 4. RETURN UPDATED PROFILE ---
         res.json({ 
             message: `${changeType.charAt(0).toUpperCase() + changeType.slice(1)} updated successfully.`,
             profile: {
-                _id: user._id, name: user.name, secondName: user.secondName,
-                email: user.email, profilePicture: user.profilePicture, role: user.role,
-                primeAccessUntil: user.primeAccessUntil, passExpiry: user.passExpiry,
+                _id: user._id, 
+                name: user.name, 
+                secondName: user.secondName,
+                email: user.email, 
+                whatsapp: user.whatsapp,
+                profilePicture: user.profilePicture, 
+                role: user.role,
+                primeAccessUntil: user.primeAccessUntil, 
+                passExpiry: user.passExpiry,
                 category: user.category,
             }
         });
@@ -1200,6 +1371,29 @@ const verifyContactChange = async (req, res) => {
     } catch (error) {
         console.error("Verify Contact Change Error:", error);
         res.status(500).json({ message: "Server error while verifying change." });
+    }
+};
+
+/**
+ * @desc    Update internal admin notes for a user
+ * @route   PUT /api/admin/users/:id/notes
+ * @access  Private/Admin
+ */
+const updateAdminNotes = async (req, res) => {
+    try {
+        const { notes } = req.body;
+        const user = await User.findById(req.params.id);
+        
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        // Ensure adminNotes field exists in your schema!
+        user.adminNotes = notes;
+        await user.save();
+
+        res.json({ message: 'Staff notes updated successfully', adminNotes: user.adminNotes });
+    } catch (err) {
+        console.error("Update Admin Notes Error:", err);
+        res.status(500).json({ message: 'Failed to update notes.' });
     }
 };
 
@@ -1251,4 +1445,6 @@ module.exports = {
   addContactInfo,
   initiateContactChange,
   verifyContactChange,
+  updateUserByAdmin,
+  updateAdminNotes,
 };

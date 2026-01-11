@@ -6,7 +6,7 @@ const userSchema = new mongoose.Schema({
     email: { type: String, unique: true, required: true },
     profilePicture: { type: String },
 
-     firebaseUid: {
+    firebaseUid: {
         type: String,
         unique: true,
         sparse: true
@@ -43,6 +43,12 @@ const userSchema = new mongoose.Schema({
         default: null
     },
 
+    // --- NEW: SECURITY & RATE LIMITING FIELDS ---
+    security: {
+        lastEmailChangeDate: { type: Date, default: null },
+        lastPhoneChangeDate: { type: Date, default: null },
+    },
+
     pendingContactChange: {
         changeType: { type: String, enum: ['email', 'phone'] },
         newValue: { type: String },
@@ -50,20 +56,25 @@ const userSchema = new mongoose.Schema({
         expires: { type: Date }
     },
 
-    // Add this field to keep a history of old contact info
-    contactHistory: [{
-        changeType: { type: String, enum: ['email', 'phone'] },
-        oldValue: { type: String },
-        changedAt: { type: Date, default: Date.now }
-    }],
+    adminNotes: { 
+        type: String, 
+        default: "" 
+    },
 
-    
-    // Add authProvider to track how the user signed up
+    contactHistory: [{
+    changeType: { type: String, enum: ['email', 'phone'] },
+    oldValue: { type: String },
+    changedBy: { type: String, enum: ['user', 'admin'], default: 'user' }, 
+    changedAt: { type: Date, default: Date.now }
+}],
+
     authProvider: {
         type: String,
         enum: ['email', 'google', 'phone'],
         default: 'email'
     }
 });
+
+
 
 module.exports = mongoose.model('User', userSchema);

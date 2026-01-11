@@ -10,6 +10,8 @@ const {
   toggleBlockUser,
   deleteUser,
   grantPrimeAccess,
+  updateUserByAdmin,
+  updateAdminNotes
 } = require("../controllers/userController");
 
 // 2. Import Notification Controllers
@@ -43,6 +45,8 @@ router.get("/users/:id", getUserDetails);
 router.put("/users/:id/block", toggleBlockUser);
 router.put("/users/:id/prime-access", grantPrimeAccess);
 router.delete("/users/:id", deleteUser);
+router.put('/users/:id', updateUserByAdmin);
+router.put('/users/:id/notes',  updateAdminNotes);
 
 // --- Feedback Management Routes ---
 router.get("/feedback", getAllFeedback);

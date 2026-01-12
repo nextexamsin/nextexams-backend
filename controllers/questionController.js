@@ -99,11 +99,47 @@ export const updateQuestion = async (req, res) => {
       availableLanguages: getAvailableLanguages(req.body)
     };
 
-    // 🔥 ADD .populate('groupId') to the execution
+    // 1. Update the Question in DB
     const updated = await Question.findByIdAndUpdate(req.params.id, updateData, { new: true })
-      .populate('groupId'); 
+      .populate('groupId');
 
     if (!updated) return res.status(404).json({ error: 'Question not found' });
+
+    // ---------------------------------------------------------
+    // 🗑️ CACHE INVALIDATION LOGIC (The Fix)
+    // ---------------------------------------------------------
+    if (req.redis) {
+        try {
+            // A. Find all Test Series that contain this question ID
+            // We search inside the 'sections.questions' array
+            const affectedTests = await TestSeries.find({
+                'sections.questions': req.params.id
+            }).select('_id');
+
+            if (affectedTests.length > 0) {
+                const pipeline = req.redis.pipeline(); // Use pipeline for atomic bulk deletes
+
+                affectedTests.forEach(test => {
+                    const testId = test._id.toString();
+                    
+                    // Delete Test Content Cache (Used by startTestSecure)
+                    pipeline.del(`TEST_CONTENT_V1:${testId}`);
+                    
+                    // Delete Solution Cache (Used by getSolutionForTest)
+                    pipeline.del(`SOLUTION_STATIC_V1:${testId}`);
+                    
+                    console.log(`🗑️ Invalidating Cache for Test Series: ${testId}`);
+                });
+
+                await pipeline.exec();
+            }
+        } catch (cacheErr) {
+            console.error("⚠️ Cache Invalidation Failed:", cacheErr);
+            // Don't fail the request if cache clearing fails, just log it.
+        }
+    }
+    // ---------------------------------------------------------
+
     res.json(updated);
   } catch (err) {
     console.error('Update Question Error:', err.message);

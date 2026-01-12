@@ -477,12 +477,12 @@ export const updateTestSeries = async (req, res) => {
   try {
     const testToUpdate = await TestSeries.findById(req.params.id);
     if (!testToUpdate) {
-        return res.status(404).json({ error: 'TestSeries not found' });
+      return res.status(404).json({ error: 'TestSeries not found' });
     }
 
     // Normalize subject to lowercase if it is being updated
     if (req.body.subject) {
-        req.body.subject = req.body.subject.toLowerCase();
+      req.body.subject = req.body.subject.toLowerCase();
     }
 
     // Apply the updates from the request body
@@ -490,23 +490,31 @@ export const updateTestSeries = async (req, res) => {
 
     // If sections changed, recalculate totalMarks
     if (req.body.sections) {
-        await testToUpdate.populate('sections.questions');
-        const { total } = calcScore([], testToUpdate);
-        testToUpdate.totalMarks = total;
+      await testToUpdate.populate('sections.questions');
+      const { total } = calcScore([], testToUpdate);
+      testToUpdate.totalMarks = total;
     }
     
     const updatedTest = await testToUpdate.save();
 
     // ---------------------------------------------------------
-    // 🗑️ CACHE CLEARING LOGIC (The Fix)
+    // 🗑️ CACHE CLEARING LOGIC (Robust Version)
     // ---------------------------------------------------------
     if (req.redis) {
-        const cacheKey = `TEST_CONTENT_V1:${req.params.id}`;
-        
-        // Delete the key. The next user will trigger a fresh DB fetch.
-        await req.redis.del(cacheKey); 
-        
-        console.log(`✅ Cache Cleared for Test ID: ${req.params.id}`);
+      const testId = req.params.id;
+      
+      // Use pipeline to delete multiple keys at once efficiently
+      const pipeline = req.redis.pipeline();
+      
+      // 1. Delete the "Start Test" content (User Interface)
+      pipeline.del(`TEST_CONTENT_V1:${testId}`);
+      
+      // 2. Delete the "Solution" content (Analysis Page)
+      pipeline.del(`SOLUTION_STATIC_V1:${testId}`);
+      
+      await pipeline.exec();
+      
+      console.log(`✅ All Caches (Content & Solution) Cleared for Test ID: ${testId}`);
     }
     // ---------------------------------------------------------
 

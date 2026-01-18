@@ -155,8 +155,10 @@ const allowedOrigins = [
     'https://nextexams.in',
     'https://www.nextexams.in',
     'https://tool.nextexams.in',
+    'https://jobs.nextexams.in', // <--- ADD THIS LINE
     'http://localhost:5173',
-    'http://localhost:5174'
+    'http://localhost:5174',
+    'http://localhost:3000'      // <--- ADD THIS (For your local Next.js dev)
 ];
 
 const corsOptions = {

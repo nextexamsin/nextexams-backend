@@ -40,50 +40,19 @@ const sectionSchema = new mongoose.Schema({
     }
 });
 
-const userAttemptSchema = new mongoose.Schema({
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    startedAt: { type: Date },
-    endedAt: { type: Date },
-    isCompleted: { type: Boolean, default: false },
-    isPaused: { type: Boolean, default: false },
-    attemptNumber: { type: Number, default: 1 },
-    answers: [
-        {
-            questionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Question' },
-            selectedOptions: [String],
-            timeTaken: { type: Number },
-            // ✅ NEW FIELDS ADDED HERE
-            isMarked: { type: Boolean, default: false },
-            isVisited: { type: Boolean, default: false }
-        }
-    ],
-    timeLeftInSeconds: { type: Number },
-    currentSectionIndex: { type: Number, default: 0 },
-    currentQuestionIndex: { type: Number, default: 0 },
-    score: { type: Number },
-    totalMarks: { type: Number },
-    cutoff: {
-        UR: { type: Number }, EWS: { type: Number },
-        OBC: { type: Number }, SC: { type: Number }, ST: { type: Number }
-    }
-});
-
 
 const testSeriesSchema = new mongoose.Schema({
     title: { type: String, required: true },
     description: { type: String },
     exam: { type: String, required: true },
     
-    // Legacy generic tags (Keep this for extra metadata)
     subjectTags: [String],
 
-    // ✅ NEW: Global Book Tags (Matches with Book.tags)
     tags: { 
         type: [String], 
         default: [] 
     },
 
-    // ✅ NEW: Level 3 Filter (Subject)
     subject: { 
         type: String, 
         trim: true,
@@ -106,7 +75,6 @@ const testSeriesSchema = new mongoose.Schema({
         default: 'draft',
     },
     
-    // Level 1 Filter: Test Type
     testType: {
         type: String,
         enum: ['full-length', 'sectional', 'quiz'],
@@ -114,7 +82,6 @@ const testSeriesSchema = new mongoose.Schema({
         index: true 
     },
 
-    // ✅ NEW: Level 2 Filter (Sub Category)
     subCategory: {
         type: String,
         trim: true,
@@ -129,8 +96,26 @@ const testSeriesSchema = new mongoose.Schema({
     negativeMarking: { type: Number, default: null },
     markingScheme: { type: markingSchemeSchema, default: null },
 
+    // ✅ NEW: LIVE TEST CONFIGURATION
+    isLiveTest: { type: Boolean, default: false },
+    liveTestType: { 
+        type: String, 
+        enum: ['fixed', 'flexible'], // Fixed = exact start/end time. Flexible = anytime within window
+        default: 'flexible'
+    },
+    liveTestStatus: {
+        type: String,
+        enum: ['Upcoming', 'RegistrationOpen', 'Live', 'Completed', 'ResultsPublished'],
+        default: 'Upcoming'
+    },
+    registrationStartTime: { type: Date, default: null },
+    registrationEndTime: { type: Date, default: null },
+    testWindowStartTime: { type: Date, default: null },
+    testWindowEndTime: { type: Date, default: null },
+    resultPublishTime: { type: Date, default: null },
+    registeredUsersCount: { type: Number, default: 0 }, // Denormalized count for fast UI rendering
+
     sections: [sectionSchema],
-    attempts: [userAttemptSchema],
     
     cutoff: {
         UR: { type: Number, default: 0 }, EWS: { type: Number, default: 0 },
@@ -144,7 +129,9 @@ const testSeriesSchema = new mongoose.Schema({
     groupId: { type: mongoose.Schema.Types.ObjectId, ref: 'TestSeriesGroup' },
 }, { timestamps: true });
 
-// Compound index to speed up the "Filter inside Filter" queries
+// Compound indexes to speed up the "Filter inside Filter" queries
 testSeriesSchema.index({ testType: 1, subCategory: 1, subject: 1, filter1: 1 });
+// Index for fetching Live Tests quickly
+testSeriesSchema.index({ isLiveTest: 1, liveTestStatus: 1 });
 
 module.exports = mongoose.model('TestSeries', testSeriesSchema);

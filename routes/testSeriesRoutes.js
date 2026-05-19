@@ -23,7 +23,8 @@ const {
     bulkUploadTestSeries,
     updateTestStatus, 
     getPublicTestsByGroupId,
-    getFilterOptions 
+    getFilterOptions,
+    registerForLiveTest
 } = require('../controllers/testSeriesController');
 
 const { protect, adminOnly } = require('../middleware/authMiddleware');
@@ -79,6 +80,7 @@ router.get('/:testId/solution', protect, getSolutionForTest);
 router.get('/:testId/leaderboard', protect, getLeaderboard);
 router.get('/:testId/all-attempts-summary', getAllAttemptsSummary);
 router.get('/:testId/attempts/user', protect, getUserAttemptForTest);
+router.post('/:testId/register-live', protect, registerForLiveTest);
 
 // Generic route comes last
 router.get('/:id', getTestSeriesById);

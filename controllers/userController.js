@@ -17,6 +17,7 @@ const redis = new Redis({
 const { OAuth2Client } = require('google-auth-library');
 const jwt = require('jsonwebtoken');
 const cloudinary = require('cloudinary').v2;
+const TestAttempt = require('../models/TestAttempt');
 
 
 
@@ -660,35 +661,78 @@ const updateUserByAdmin = async (req, res) => {
     }
 };
 
+// 1. UPDATE: getUserStats
 const getUserStats = async (req, res) => {
   try {
     const userId = req.user._id;
-    const attempted = await TestSeries.aggregate([
-      { $unwind: "$attempts" },
-      { $match: { "attempts.userId": new mongoose.Types.ObjectId(userId) } },
+    
+    // ✅ NEW: Much cleaner aggregation directly on TestAttempt collection
+    const attempted = await TestAttempt.aggregate([
+      { $match: { userId: new mongoose.Types.ObjectId(userId) } },
       {
         $group: {
           _id: null,
           total: { $sum: 1 },
-          completed: { $sum: { $cond: [{ $eq: ["$attempts.isCompleted", true] }, 1, 0] } },
-          inProgress: { $sum: { $cond: [{ $eq: ["$attempts.isCompleted", false] }, 1, 0] } },
+          completed: { $sum: { $cond: [{ $eq: ["$isCompleted", true] }, 1, 0] } },
+          inProgress: { $sum: { $cond: [{ $eq: ["$isCompleted", false] }, 1, 0] } },
         },
       },
     ]);
+    
     const stats = attempted[0] || { total: 0, completed: 0, inProgress: 0 };
     const fullName = req.user.name + (req.user.secondName ? ' ' + req.user.secondName : '');
+    
     res.json({
-      name: fullName,
-      email: req.user.email,
-      role: req.user.role,
-      passExpiry: req.user.passExpiry,
-      primeAccessUntil: req.user.primeAccessUntil,
-      category: req.user.category,
-      stats,
+      name: fullName, email: req.user.email, role: req.user.role,
+      passExpiry: req.user.passExpiry, primeAccessUntil: req.user.primeAccessUntil,
+      category: req.user.category, stats,
     });
   } catch (err) {
     console.error("User stats error:", err);
     res.status(500).json({ message: 'Failed to load user stats' });
+  }
+};
+
+
+// 2. UPDATE: getAttemptedTests
+const getAttemptedTests = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    // ✅ NEW: Query TestAttempt, and lookup the TestSeries info
+    const attemptedTests = await TestAttempt.aggregate([
+      { $match: { userId: new mongoose.Types.ObjectId(userId) } },
+      { $sort: { endedAt: -1 } }, // Sort latest first
+      {
+        // Join with TestSeries to get Title and GroupId
+        $lookup: {
+          from: "testseries", // Mongoose pluralizes TestSeries to testseries
+          localField: "testSeriesId",
+          foreignField: "_id",
+          as: "testDetails"
+        }
+      },
+      { $unwind: "$testDetails" },
+      {
+        $project: {
+          _id: 0,
+          testId: "$testSeriesId",
+          testTitle: "$testDetails.title",
+          groupId: "$testDetails.groupId",
+          rank: "$rank",
+          marks: "$score",
+          totalMarks: "$totalMarks", 
+          endedAt: "$endedAt",
+          attemptNumber: "$attemptNumber",
+          cutoff: "$cutoff",
+        }
+      }
+    ]);
+    
+    res.json(attemptedTests);
+  } catch (err) {
+    console.error("getAttemptedTests error:", err);
+    res.status(500).json({ message: "Failed to fetch attempted tests" });
   }
 };
 
@@ -776,71 +820,43 @@ const unenrollFromTestSeriesGroup = async (req, res) => {
   }
 };
 
-const getAttemptedTests = async (req, res) => {
-  try {
-    const userId = req.user._id;
-    const attemptedTests = await TestSeries.aggregate([
-      { $unwind: "$attempts" },
-      { $match: { "attempts.userId": new mongoose.Types.ObjectId(userId) } },
-      {
-        $project: {
-          _id: 0,
-          testId: "$_id",
-          testTitle: "$title",
-          groupId: "$groupId",
-          rank: "$attempts.rank",
-          marks: "$attempts.score",
-          totalMarks: { $sum: { $map: { input: "$sections", as: "section", in: { $multiply: [{ $size: "$$section.questions" }, "$$section.marksPerQuestion"] } } } },
-          endedAt: "$attempts.endedAt",
-          attemptNumber: "$attempts.attemptNumber",
-          cutoff: "$cutoff",
-        }
-      },
-      { $sort: { endedAt: -1 } }
-    ]);
-    res.json(attemptedTests);
-  } catch (err) {
-    console.error("getAttemptedTests error:", err);
-    res.status(500).json({ message: "Failed to fetch attempted tests" });
-  }
-};
+
 
 const getAttemptedSummaries = async (req, res) => {
   try {
     const userId = req.user._id;
-    const tests = await TestSeries.find({ "attempts.userId": new mongoose.Types.ObjectId(userId) }).select('title attempts cutoff isPaid');
-    const summaries = [];
-    for (const test of tests) {
-      const userAttemptsInTest = test.attempts.filter(a => a.userId.toString() === userId.toString());
-      for (const userAttempt of userAttemptsInTest) {
-        let userRank = '-';
-        let totalUsersInAttempt = 0;
-        if (userAttempt.isCompleted) {
-          const leaderboard = test.attempts.filter(a => a.isCompleted && a.attemptNumber === userAttempt.attemptNumber).sort((a, b) => (b.score || 0) - (a.score || 0));
-          totalUsersInAttempt = leaderboard.length;
-          const rankIndex = leaderboard.findIndex(u => u._id.equals(userAttempt._id));
-          userRank = rankIndex > -1 ? rankIndex + 1 : '-';
+    
+    // ✅ FIX: Use Aggregation on the decoupled collection
+    const summaries = await TestAttempt.aggregate([
+      { $match: { userId: new mongoose.Types.ObjectId(userId) } },
+      { $sort: { endedAt: -1 } },
+      {
+        $lookup: {
+          from: "testseries", 
+          localField: "testSeriesId",
+          foreignField: "_id",
+          as: "testDetails"
         }
-        summaries.push({
-          _id: userAttempt._id,
-          testId: test._id,
-          testTitle: test.title,
-          attemptNumber: userAttempt.attemptNumber,
-          endedAt: userAttempt.endedAt,
-          marks: userAttempt.score,
-          totalMarks: userAttempt.totalMarks,
-          cutoff: test.cutoff,
-          rank: userRank,
-          totalUsers: totalUsersInAttempt,
-          isPaid: test.isPaid,
-        });
+      },
+      { $unwind: "$testDetails" },
+      {
+        $project: {
+          _id: 1,
+          testId: "$testSeriesId",
+          testTitle: "$testDetails.title",
+          attemptNumber: 1,
+          endedAt: 1,
+          marks: "$score",
+          totalMarks: 1,
+          cutoff: "$testDetails.cutoff",
+          rank: 1, 
+          isPaid: "$testDetails.isPaid",
+          // Note: If you still need 'totalUsers' per attempt here, you will need 
+          // a secondary lookup, but usually rank and score are enough for a summary.
+        }
       }
-    }
-    summaries.sort((a, b) => {
-      const dateA = a.endedAt ? new Date(a.endedAt) : new Date();
-      const dateB = b.endedAt ? new Date(b.endedAt) : new Date();
-      return dateB.getTime() - dateA.getTime();
-    });
+    ]);
+    
     res.json(summaries);
   } catch (err) {
     console.error('getAttemptedSummaries Error:', err);

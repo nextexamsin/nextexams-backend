@@ -1,6 +1,7 @@
 // nextExams-backend/controllers/testSeriesController.js
 import mongoose from 'mongoose';
 import xlsx from 'xlsx';
+import LiveRegistration from '../models/LiveRegistration.js';
 import Question from '../models/Question.js';
 import QuestionGroup from '../models/QuestionGroup.js';
 import TestSeries from '../models/testSeriesModel.js';
@@ -9,6 +10,7 @@ import User from '../models/User.js';
 import Notification from '../models/Notification.js';
 import QuestionReport from '../models/QuestionReport.js';
 import calcScore from '../utils/calcScore.js';
+import TestAttempt from '../models/TestAttempt.js';
 
 
 const detailedQuestionPopulation = {
@@ -21,6 +23,52 @@ const detailedQuestionPopulation = {
   }
 };
 
+
+// ---------------------------------------------------------
+// NEW: LIVE TEST REGISTRATION API
+// ---------------------------------------------------------
+export const registerForLiveTest = async (req, res) => {
+    const userId = req.user._id;
+    const { testId } = req.params;
+
+    try {
+        const test = await TestSeries.findById(testId).select('isLiveTest registrationStartTime registrationEndTime liveTestStatus');
+        
+        if (!test) return res.status(404).json({ message: 'Test not found' });
+        if (!test.isLiveTest) return res.status(400).json({ message: 'This is not a live test.' });
+
+        const now = new Date();
+
+        // 1. Verify Registration Window
+        if (test.registrationStartTime && now < new Date(test.registrationStartTime)) {
+            return res.status(403).json({ message: 'Registration has not started yet.' });
+        }
+        if (test.registrationEndTime && now > new Date(test.registrationEndTime)) {
+            return res.status(403).json({ message: 'Registration has ended.' });
+        }
+
+        // 2. Prevent Duplicate Registration
+        const existingRegistration = await LiveRegistration.findOne({ testSeriesId: testId, userId });
+        if (existingRegistration) {
+            return res.status(400).json({ message: 'You are already registered for this test.' });
+        }
+
+        // 3. Save Registration
+        const registration = new LiveRegistration({
+            userId,
+            testSeriesId: testId
+        });
+        await registration.save();
+
+        // 4. Update Denormalized Count (For fast UI rendering)
+        await TestSeries.findByIdAndUpdate(testId, { $inc: { registeredUsersCount: 1 } });
+
+        res.status(200).json({ message: 'Successfully registered for the live test!' });
+    } catch (err) {
+        console.error('Registration Error:', err.message);
+        res.status(500).json({ message: 'Failed to register for live test' });
+    }
+};
 
 export const createTestSeries = async (req, res) => {
     try {
@@ -455,16 +503,25 @@ export const getAllTestSeries = async (req, res) => {
 // GET: Single test series by ID
 export const getTestSeriesById = async (req, res) => {
     try {
+        // 1. Fetch the test as a plain object (.lean()) so we can dynamically add properties
         const test = await TestSeries.findById(req.params.id)
-            // 👇 UPDATE THIS BLOCK
             .populate({
                 path: 'sections.questions',
-                select: 'questionText questionImage options correctAnswer explanation explanationImage questionType groupId', // Added groupId
-                populate: { path: 'groupId' } // Nested populate to get the Passage
+                select: 'questionText questionImage options correctAnswer explanation explanationImage questionType groupId',
+                populate: { path: 'groupId' } 
             })
-            .populate('attempts.userId', 'name email');
+            .lean(); 
             
         if (!test) return res.status(404).json({ error: 'TestSeries not found' });
+
+        // 2. Fetch the decoupled attempts manually
+        const attempts = await TestAttempt.find({ testSeriesId: test._id })
+            .populate('userId', 'name email')
+            .lean();
+
+        // 3. Attach the attempts back onto the test object for the frontend
+        test.attempts = attempts;
+
         res.json(test);
     } catch (err) {
         console.error('Get TestSeries By ID Error:', err.message);
@@ -564,7 +621,7 @@ export const deleteTestSeries = async (req, res) => {
     }
 
     // Step 2: Delete cloned instances
-    await TestSeries.deleteMany({ originalId: masterTestId });
+   await TestAttempt.deleteMany({ testSeriesId: masterTestId });
 
     // ---------------------------------------------------------
     // 🗑️ CACHE CLEARING LOGIC
@@ -585,51 +642,72 @@ export const deleteTestSeries = async (req, res) => {
 };
 
 
+
 // Get recent test series for a user
 export const getRecentTestSeriesForUser = async (req, res) => {
   try {
     const userId = req.user._id;
-    const recent = await TestSeries.find({ 'attempts.userId': userId })
-      .sort({ updatedAt: -1 })
-      .limit(5)
-      // ✅ Added 'filter1'
-      .select('title exam subjectTags releaseDate filter1');
-    res.json(recent);
+
+    // ✅ NEW: Aggregate from TestAttempt to find recent unique tests
+    const recentAttempts = await TestAttempt.aggregate([
+      { $match: { userId: new mongoose.Types.ObjectId(userId) } },
+      { $sort: { updatedAt: -1 } }, 
+      { $group: { _id: "$testSeriesId", lastActivity: { $first: "$updatedAt" } } },
+      { $sort: { lastActivity: -1 } },
+      { $limit: 5 },
+      {
+        $lookup: {
+          from: "testseries",
+          localField: "_id",
+          foreignField: "_id",
+          as: "testDetails"
+        }
+      },
+      { $unwind: "$testDetails" },
+      {
+        $project: {
+          _id: "$testDetails._id",
+          title: "$testDetails.title",
+          exam: "$testDetails.exam",
+          subjectTags: "$testDetails.subjectTags",
+          releaseDate: "$testDetails.releaseDate",
+          filter1: "$testDetails.filter1"
+        }
+      }
+    ]);
+
+    res.json(recentAttempts);
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Error fetching recent test series' });
   }
 };
 
+// 1. START TEST SECURE
 export const startTestSecure = async (req, res) => {
   const userId = req.user._id;
   const { testId, reattempt } = req.body;
-  const redis = req.redis; // ✅ Get Redis from request
+  const redis = req.redis;
 
   try {
     // ---------------------------------------------------------
     // STEP 1: CACHE HIT (Fetch "Heavy" Test Data from Redis)
     // ---------------------------------------------------------
-    // We cache the Static Data (Questions, Sections, Instructions)
     const cacheKey = `TEST_CONTENT_V1:${testId}`;
     let staticTestData = await redis.get(cacheKey);
 
     if (!staticTestData) {
-      // ⚠️ Cache Miss: Fetch from DB (Heavy Query) using .lean() for speed
-      console.log(`[Cache Miss] Fetching Test Content for ${testId}`);
-      
+      // ✅ MODIFIED: We now fetch Live Test config fields too
       const testDoc = await TestSeries.findById(testId)
-        .select('title sections testDurationInMinutes allowSectionJump cutoff description exam') // Select only static fields
+        .select('title sections testDurationInMinutes allowSectionJump cutoff description exam isPaid isLiveTest liveTestType testWindowStartTime testWindowEndTime resultPublishTime') 
         .populate({
           path: 'sections.questions',
-          select: 'questionText questionImage options questionType groupId marks negativeMarks answerMin answerMax', // Fetch pure data
+          select: 'questionText questionImage options questionType groupId marks negativeMarks answerMin answerMax',
           populate: { path: 'groupId', select: 'directionText directionImage type' }
-        })
-        .lean(); // ✅ .lean() makes it 5x faster and lighter on memory
+        }).lean();
 
       if (!testDoc) return res.status(404).json({ message: 'Test not found' });
 
-      // Handle Hindi Logic inside the cache generation
       testDoc.sections.forEach(section => {
          const hasHindi = section.questions.some(q => 
             (q.questionText?.hi && q.questionText.hi.trim() !== '') ||
@@ -639,116 +717,119 @@ export const startTestSecure = async (req, res) => {
       });
 
       staticTestData = testDoc;
-      // ✅ Save to Redis for 24 Hours (86400 seconds)
       await redis.set(cacheKey, JSON.stringify(testDoc), { ex: 86400 });
     } else {
-        // Ensure it's an object if Redis returned a string
-        if (typeof staticTestData === 'string') {
-            staticTestData = JSON.parse(staticTestData);
+        if (typeof staticTestData === 'string') staticTestData = JSON.parse(staticTestData);
+    }
+
+    const now = new Date(); // ⏱️ SERVER TIME OF TRUTH
+
+    // ---------------------------------------------------------
+    // STEP 2: LIVE TEST ENFORCEMENT & REGISTRATION CHECK
+    // ---------------------------------------------------------
+    if (staticTestData.isLiveTest) {
+        
+        // A. Check Registration
+        const isRegistered = await LiveRegistration.findOne({ testSeriesId: testId, userId });
+        if (!isRegistered) {
+            return res.status(403).json({ message: 'You must register for this live test before starting.' });
+        }
+
+        const windowStart = new Date(staticTestData.testWindowStartTime);
+        const windowEnd = new Date(staticTestData.testWindowEndTime);
+
+        // B. Check Test Window Boundaries
+        if (now < windowStart) {
+            return res.status(403).json({ message: 'This live test has not started yet.' });
+        }
+        if (now > windowEnd) {
+            return res.status(403).json({ message: 'The window for this live test has ended.' });
         }
     }
 
     // ---------------------------------------------------------
-    // STEP 2: DB CHECK (Fetch "Dynamic" User Data Only)
+    // STEP 3: FETCH ATTEMPTS FROM NEW COLLECTION
     // ---------------------------------------------------------
-    // We fetch ONLY the user attempts and metadata. No questions. Very fast.
-    const dynamicTestDoc = await TestSeries.findById(testId)
-       .select('attempts isPaid originalId allowSectionJump testDurationInMinutes sections.durationInMinutes'); // Light query
-
-    if (!dynamicTestDoc) return res.status(404).json({ message: 'Test not found (Dynamic)' });
+    const previousAttempts = await TestAttempt.find({ testSeriesId: testId, userId }).lean();
+    const completedAttempts = previousAttempts.filter(a => a.isCompleted);
+    let existingAttempt = await TestAttempt.findOne({ testSeriesId: testId, userId, isCompleted: false });
 
     // ---------------------------------------------------------
-    // STEP 3: ACCESS CONTROL & ATTEMPT LOGIC
+    // STEP 4: ACCESS CONTROL (Prime vs Free)
     // ---------------------------------------------------------
     const user = await User.findById(userId).select('passExpiry role');
-    const isPrime = user.passExpiry && new Date(user.passExpiry) > new Date();
-    const isAdmin = user.role === 'admin';
+    const isPrime = user?.passExpiry ? new Date(user.passExpiry) > now : false;
+const isAdmin = user?.role === 'admin';
 
-    const previousAttempts = dynamicTestDoc.attempts.filter(a => a.userId.toString() === userId.toString());
-    const completedAttempts = previousAttempts.filter(a => a.isCompleted);
-    let existingAttempt = dynamicTestDoc.attempts.find(a => !a.isCompleted && a.userId.toString() === userId.toString());
-
-    // Rule A: PAID TESTS
-    if (dynamicTestDoc.isPaid && !isPrime && !isAdmin) {
-        return res.status(403).json({ 
-            message: 'This is a Prime Member exclusive test. Please purchase a pass.',
-            requiresPrime: true 
-        });
+    if (staticTestData.isPaid && !isPrime && !isAdmin) {
+        return res.status(403).json({ message: 'This is a Prime Member exclusive test.', requiresPrime: true });
     }
 
-    // Rule B: FREE TESTS - REATTEMPT LIMIT
-    const MAX_FREE_ATTEMPTS = 2;
-    if (!dynamicTestDoc.isPaid && !isPrime && !isAdmin) {
+    // Rule: Live tests only allow 1 attempt during the live window. Free practice tests allow 2.
+    const MAX_FREE_ATTEMPTS = staticTestData.isLiveTest ? 1 : 2; 
+    
+    if (!staticTestData.isPaid && !isPrime && !isAdmin) {
         if (!existingAttempt && completedAttempts.length >= MAX_FREE_ATTEMPTS) {
             return res.status(200).json({ 
-                success: false, 
-                errorType: 'PRIME_LIMIT',
-                message: `You have reached the maximum free attempts. Upgrade to Prime.`,
+                success: false, errorType: 'PRIME_LIMIT', 
+                message: staticTestData.isLiveTest ? 'You have already attempted this live test.' : `Maximum free attempts reached.`, 
                 requiresPrime: true 
             });
         }
     }
 
     // ---------------------------------------------------------
-    // STEP 4: CREATE OR RESUME ATTEMPT
+    // STEP 5: CREATE OR RESUME ATTEMPT
     // ---------------------------------------------------------
     if (!existingAttempt) {
       if (completedAttempts.length > 0 && !reattempt) {
          return res.status(403).json({ 
-             message: 'Test already completed.', 
-             status: 'completed',
-             attemptId: completedAttempts[completedAttempts.length-1]._id
+             message: 'Test already completed.', status: 'completed', attemptId: completedAttempts[completedAttempts.length-1]._id
          });
       }
 
-      // Calculate Initial Time (Use cached data structure for duration lookup)
+      // Calculate base time based on sections/test settings
       let initialTime = 0;
-      if (dynamicTestDoc.allowSectionJump) {
-         if (dynamicTestDoc.testDurationInMinutes > 0) {
-            initialTime = dynamicTestDoc.testDurationInMinutes * 60;
-         } else {
-             // Fallback: sum section times from static data
-            initialTime = staticTestData.sections.reduce((acc, sec) => acc + (Number(sec.durationInMinutes) || 0), 0) * 60;
-         }
+      if (staticTestData.allowSectionJump) {
+         initialTime = staticTestData.testDurationInMinutes > 0 ? staticTestData.testDurationInMinutes * 60 : staticTestData.sections.reduce((acc, sec) => acc + (Number(sec.durationInMinutes) || 0), 0) * 60;
       } else {
          if (staticTestData.sections && staticTestData.sections.length > 0) {
             initialTime = (Number(staticTestData.sections[0].durationInMinutes) || 0) * 60;
          }
       }
 
-      const newAttempt = {
+      // ⏱️ LIVE TEST TIMER CORRECTION (Crucial)
+      // If it's a 'fixed' live test, the timer cannot exceed the official end time of the test window.
+      if (staticTestData.isLiveTest && staticTestData.liveTestType === 'fixed') {
+          const secondsUntilWindowEnds = Math.floor((new Date(staticTestData.testWindowEndTime) - now) / 1000);
+          
+          // E.g., User has 60 mins base time, but test ends in 30 mins. They only get 30 mins.
+          initialTime = Math.min(initialTime, secondsUntilWindowEnds); 
+      }
+
+      // Save directly to TestAttempt Collection
+      existingAttempt = new TestAttempt({
         userId,
-        startedAt: new Date(),
+        testSeriesId: testId,
+        startedAt: now,
         isCompleted: false,
         attemptNumber: completedAttempts.length + 1,
         answers: [],
         currentSectionIndex: 0,
         currentQuestionIndex: 0,
-        timeLeftInSeconds: initialTime
-      };
+        timeLeftInSeconds: initialTime,
+        // ✅ Apply Live Flags
+        isLiveAttempt: staticTestData.isLiveTest || false,
+        isResultPending: staticTestData.isLiveTest ? true : false
+      });
 
-      dynamicTestDoc.attempts.push(newAttempt);
-      await dynamicTestDoc.save(); // ✅ Only saving metadata + attempts
-      existingAttempt = dynamicTestDoc.attempts[dynamicTestDoc.attempts.length - 1];
+      await existingAttempt.save();
     }
 
-    // ---------------------------------------------------------
-    // STEP 5: MERGE & RESPOND
-    // ---------------------------------------------------------
-    // We combine the Static Questions (Redis) with the Dynamic Attempt ID (DB)
-    const finalResponse = {
-        ...staticTestData, // The heavy questions from cache
-        _id: dynamicTestDoc._id, // Ensure ID matches
-        attempts: undefined, // Don't send other users' attempts
-        isPaid: dynamicTestDoc.isPaid
-    };
+    const finalResponse = { ...staticTestData, _id: testId, isPaid: staticTestData.isPaid };
 
     res.status(200).json({
-      message: 'Access granted',
-      testId,
-      test: finalResponse, // Sent from Cache! 🚀
-      attemptId: existingAttempt._id,
-      attempt: existingAttempt
+      message: 'Access granted', testId, test: finalResponse, attemptId: existingAttempt._id, attempt: existingAttempt
     });
 
   } catch (err) {
@@ -758,81 +839,60 @@ export const startTestSecure = async (req, res) => {
 };
 
 
+// 2. SAVE TEST PROGRESS
 export const saveTestProgress = async (req, res) => {
   const userId = req.user._id;
   const { testId } = req.params;
   const { answers, timeLeftInSeconds, currentSectionIndex, currentQuestionIndex } = req.body;
 
   try {
-    const test = await TestSeries.findById(testId);
-    if (!test) return res.status(404).json({ message: 'Test not found' });
-
-    // ✅ CHECK: Ensure we only fetch IN-PROGRESS attempts
-    const attempt = test.attempts.find(
-      a => a.userId.toString() === userId.toString() && !a.isCompleted
-    );
+    // ✅ NEW: Find the specific attempt directly. No need to load the TestSeries!
+    const attempt = await TestAttempt.findOne({ testSeriesId: testId, userId, isCompleted: false });
 
     if (!attempt) {
         return res.status(403).json({ message: 'Cannot save. Attempt not active or already submitted.' });
     }
 
-    // ✅ FIX: Handle Section Switching Logic
     const isSwitchingSection = currentSectionIndex !== undefined && currentSectionIndex !== attempt.currentSectionIndex;
 
     if (isSwitchingSection) {
-      // 1. Update the section index
       attempt.currentSectionIndex = currentSectionIndex;
-
-      // 2. Handle Timer Logic based on Mode
+      const test = await TestSeries.findById(testId).select('allowSectionJump sections.durationInMinutes').lean();
+      
       if (test.allowSectionJump) {
-        // GLOBAL TIMING
-        if (timeLeftInSeconds !== undefined) {
-          attempt.timeLeftInSeconds = timeLeftInSeconds;
-        }
+        if (timeLeftInSeconds !== undefined) attempt.timeLeftInSeconds = timeLeftInSeconds;
       } else {
-        // SECTIONAL TIMING
         if (test.sections[currentSectionIndex]) {
            const newSectionDuration = test.sections[currentSectionIndex].durationInMinutes || 0;
            attempt.timeLeftInSeconds = newSectionDuration * 60;
         }
       }
     } else {
-      // Same section: just update the time
       if (timeLeftInSeconds !== undefined) attempt.timeLeftInSeconds = timeLeftInSeconds;
     }
 
     if (currentQuestionIndex !== undefined) attempt.currentQuestionIndex = currentQuestionIndex;
 
-    // Update answers
     if (answers && Array.isArray(answers)) {
       answers.forEach((newAns) => {
         const existing = attempt.answers.find(a => a.questionId.toString() === newAns.questionId);
         if (existing) {
           existing.selectedOptions = newAns.selectedOptions;
           existing.timeTaken = newAns.timeTaken || 0;
-          // ✅ NEW: Save Marked and Visited status
           existing.isMarked = newAns.isMarked;
           existing.isVisited = newAns.isVisited;
         } else {
           attempt.answers.push({
-            questionId: newAns.questionId,
-            selectedOptions: newAns.selectedOptions,
-            timeTaken: newAns.timeTaken || 0,
-            // ✅ NEW: Save Marked and Visited status on new entry
-            isMarked: newAns.isMarked || false,
-            isVisited: newAns.isVisited || true
+            questionId: newAns.questionId, selectedOptions: newAns.selectedOptions, timeTaken: newAns.timeTaken || 0,
+            isMarked: newAns.isMarked || false, isVisited: newAns.isVisited || true
           });
         }
       });
     }
 
-    await test.save();
+    await attempt.save(); // ✅ Only saving the lightweight attempt document
     
-    res.status(200).json({ 
-        message: 'Progress saved', 
-        timeLeftInSeconds: attempt.timeLeftInSeconds,
-        currentSectionIndex: attempt.currentSectionIndex
-    });
+    res.status(200).json({ message: 'Progress saved', timeLeftInSeconds: attempt.timeLeftInSeconds, currentSectionIndex: attempt.currentSectionIndex });
 
   } catch (err) {
     console.error('Save Progress Error:', err.message);
@@ -841,81 +901,82 @@ export const saveTestProgress = async (req, res) => {
 };
 
 
-
-
+// 3. COMPLETE TEST
 export const completeTest = async (req, res) => {
-  const userId = req.user._id;
-  const { testId } = req.params;
+  const userId = req.user._id;
+  const { testId } = req.params;
 
-  try {
-    const test = await TestSeries.findById(testId).populate(detailedQuestionPopulation);
-    if (!test) return res.status(404).json({ message: 'Test not found' });
+  try {
+    // Need test details to calculate the score
+    const test = await TestSeries.findById(testId).populate(detailedQuestionPopulation);
+    if (!test) return res.status(404).json({ message: 'Test not found' });
 
-    if (!test.sections || !Array.isArray(test.sections)) {
-      return res.status(400).json({ message: 'Test sections missing or invalid' });
-    }
+    // ✅ NEW: Find the attempt directly
+    const attempt = await TestAttempt.findOne({ testSeriesId: testId, userId, isCompleted: false });
+    if (!attempt) return res.status(404).json({ message: 'Attempt not found or already submitted' });
 
-    const attempt = test.attempts.find(
-      a => a.userId.toString() === userId.toString() && !a.isCompleted
-    );
-    if (!attempt) return res.status(404).json({ message: 'Attempt not found' });
+    attempt.isCompleted = true;
+    attempt.endedAt = new Date();
 
-    attempt.isCompleted = true;
-    attempt.endedAt = new Date();
+    const { score, total } = calcScore(attempt.answers, test);
+    attempt.score = score;
+    attempt.totalMarks = total;
+    attempt.cutoff = test.cutoff || {};
 
-    const { score, total } = calcScore(attempt.answers, test);
-    attempt.score = score;
-    attempt.totalMarks = total;
-    attempt.cutoff = test.cutoff || {};
+    await attempt.save(); // ✅ Save the attempt
 
-    await test.save();
-
-    res.status(200).json({ message: 'Test completed successfully' });
-  } catch (err) {
-    console.error('Complete Test Error:', err.message);
-    res.status(500).json({ message: 'Failed to complete test' });
-  }
+    res.status(200).json({ message: 'Test completed successfully' });
+  } catch (err) {
+    console.error('Complete Test Error:', err.message);
+    res.status(500).json({ message: 'Failed to complete test' });
+  }
 };
 
 
 
 export const getScore = async (req, res) => {
-  const userId = req.user._id;
-  const { testId } = req.params;
+  const userId = req.user._id;
+  const { testId } = req.params;
 
-  try {
-    const test = await TestSeries.findById(testId).populate('sections.questions');
-    const attempt = test.attempts.find(a => a.userId.toString() === userId.toString());
+  try {
+    const test = await TestSeries.findById(testId).populate('sections.questions');
+    
+    // ✅ FIX: Find the attempt from the standalone collection
+    const attempt = await TestAttempt.findOne({ 
+        testSeriesId: testId, 
+        userId: userId, 
+        isCompleted: true 
+    }).sort({ endedAt: -1 }); // Get the latest completed attempt
 
-    if (!attempt || !attempt.isCompleted) {
-      return res.status(400).json({ message: "Test not submitted or attempt not found." });
-    }
+    if (!attempt) {
+      return res.status(400).json({ message: "Test not submitted or attempt not found." });
+    }
 
-    const {
-      score,
-      totalMarks,
-      correct,
-      incorrect,
-      unattempted
-    } = calcScore(attempt.answers, test);
+    const {
+      score,
+      totalMarks,
+      correct,
+      incorrect,
+      unattempted
+    } = calcScore(attempt.answers, test);
 
-    const totalQuestions = test.sections.reduce((acc, sec) => acc + sec.questions.length, 0);
-    const attempted = attempt.answers.filter(a => a.selectedOptions?.length).length;
+    const totalQuestions = test.sections.reduce((acc, sec) => acc + sec.questions.length, 0);
+    const attempted = attempt.answers.filter(a => a.selectedOptions?.length).length;
 
-    res.json({
-      testTitle: test.title,
-      totalQuestions,
-      attempted,
-      correct,
-      wrong: incorrect,
-      score,
-      totalMarks,
-      attemptNumber: attempt.attemptNumber
-    });
-  } catch (err) {
-    console.error('Score error:', err);
-    res.status(500).json({ message: "Error fetching score" });
-  }
+    res.json({
+      testTitle: test.title,
+      totalQuestions,
+      attempted,
+      correct,
+      wrong: incorrect,
+      score,
+      totalMarks,
+      attemptNumber: attempt.attemptNumber
+    });
+  } catch (err) {
+    console.error('Score error:', err);
+    res.status(500).json({ message: "Error fetching score" });
+  }
 };
 
 const calculateDistributionStats = (scores, totalMarks) => {
@@ -956,7 +1017,9 @@ const calculateDistributionStats = (scores, totalMarks) => {
   };
 };
 
-
+// ---------------------------------------------------------
+// REPLACEMENT FUNCTIONS FOR testSeriesController.js
+// ---------------------------------------------------------
 
 export const getDetailedResult = async (req, res) => {
   const userId = req.user._id;
@@ -964,110 +1027,92 @@ export const getDetailedResult = async (req, res) => {
   const redis = req.redis;
 
   try {
-    // ---------------------------------------------------------
-    // 1. FETCH STATIC TEST CONTENT (Questions & Marking Scheme)
-    // ---------------------------------------------------------
-    const staticCacheKey = `TEST_STATIC_V1:${attemptId}`; // Using attemptId to infer test, or verify testId logic
-    // Ideally we query by TestID, but here we find by attempt. 
-    // Optimization: Find TestID first (lightweight)
-    const testIdLookup = await TestSeries.findOne({ 'attempts._id': attemptId }).select('_id title totalMarks cutoff tags markingScheme marksPerQuestion').lean();
-    
-    if (!testIdLookup) {
-        return res.status(404).json({ message: 'Test not found for this attempt' });
+    // 1. FETCH USER'S ATTEMPT (DIRECTLY FROM NEW COLLECTION)
+    const attempt = await TestAttempt.findById(attemptId).lean();
+    if (!attempt || !attempt.isCompleted) {
+        return res.status(400).json({ message: 'Attempt not found or not completed' });
     }
-    const testId = testIdLookup._id.toString();
 
-    // Now fetch full static details (Questions) with Cache
+    const testDoc = await TestSeries.findById(attempt.testSeriesId).select('isLiveTest resultPublishTime').lean();
+    if (testDoc.isLiveTest && new Date() < new Date(testDoc.resultPublishTime)) {
+        return res.status(200).json({
+            isResultPending: true,
+            message: "Your test is submitted! Ranks and detailed analysis will be available once the live test concludes.",
+            resultPublishTime: testDoc.resultPublishTime,
+            scoreSummary: { 
+                userScore: attempt.score, // Optionally show raw score, or hide this too!
+                totalMarks: attempt.totalMarks
+            }
+        });
+    }
+    
+    // Security check
+    if (attempt.userId.toString() !== userId.toString()) {
+        return res.status(403).json({ message: 'Unauthorized to view this result' });
+    }
+
+    const testId = attempt.testSeriesId.toString();
+
+    // 2. FETCH STATIC TEST CONTENT
     const testCacheKey = `SOLUTION_STATIC_V1:${testId}`;
     let staticTest = await redis.get(testCacheKey);
 
     if (!staticTest) {
        staticTest = await TestSeries.findById(testId)
-         .select('-attempts') // ❌ Critical: Exclude attempts array
          .populate({
             path: 'sections.questions',
             model: 'Question',
             select: 'questionType correctAnswer answerMin answerMax marks negativeMarks subject chapter topic'
-         })
-         .lean();
-       
-       await redis.set(testCacheKey, JSON.stringify(staticTest), { ex: 86400 }); // 24 Hours
+         }).lean();
+       await redis.set(testCacheKey, JSON.stringify(staticTest), { ex: 86400 });
     } else {
        if (typeof staticTest === 'string') staticTest = JSON.parse(staticTest);
     }
 
-    // ---------------------------------------------------------
-    // 2. FETCH CURRENT USER'S ATTEMPT
-    // ---------------------------------------------------------
-    // We use projection to fetch ONLY the one specific attempt.
-    const userAttemptDoc = await TestSeries.findOne(
-        { _id: testId },
-        { attempts: { $elemMatch: { _id: attemptId } } }
-    ).lean();
-
-    const attempt = userAttemptDoc?.attempts?.[0];
-    if (!attempt || !attempt.isCompleted) {
-        return res.status(400).json({ message: 'Attempt not found or not completed' });
-    }
-
-    // ---------------------------------------------------------
     // 3. LEADERBOARD & STATS (Cached)
-    // ---------------------------------------------------------
     const leaderboardKey = `LEADERBOARD_V1:${testId}`;
     let allUsersPerformance = await redis.get(leaderboardKey);
 
     if (!allUsersPerformance) {
-        // Fetch simplified list of scores (Lightweight)
-        const doc = await TestSeries.findById(testId)
-            .select('attempts.userId attempts.score attempts.timeTaken attempts.answers.timeTaken attempts.isCompleted')
+        // ✅ NEW: Fetch simplified list of scores directly from TestAttempt
+        const attempts = await TestAttempt.find({ testSeriesId: testId, isCompleted: true })
+            .select('userId score timeTaken answers.timeTaken')
             .lean();
 
-        allUsersPerformance = doc.attempts
-            .filter(a => a.isCompleted)
+        allUsersPerformance = attempts
             .map(a => {
-                // Calculate time taken if not stored explicitly
                 const timeTaken = a.timeTaken || a.answers?.reduce((sum, ans) => sum + (ans.timeTaken || 0), 0) || 0;
                 return {
                     userId: a.userId.toString(),
-                    score: a.score || 0, // ✅ Use stored score (Fast)
+                    score: a.score || 0,
                     timeTaken,
-                    // We don't recalculate accuracy for everyone to save CPU
                     accuracy: 0 
                 };
             })
-            .sort((a, b) => b.score - a.score); // Sort Descending
+            .sort((a, b) => b.score - a.score);
 
-        // Cache for 10 Minutes
         await redis.set(leaderboardKey, JSON.stringify(allUsersPerformance), { ex: 600 });
     } else {
         if (typeof allUsersPerformance === 'string') allUsersPerformance = JSON.parse(allUsersPerformance);
     }
 
-    // ---------------------------------------------------------
     // 4. CALCULATE USER SPECIFIC METRICS
-    // ---------------------------------------------------------
-    // We do need to calculate detailed accuracy for the CURRENT user
     const { correct, incorrect, unattempted, score, total, sectionStats, accuracy } = calcScore(attempt.answers, staticTest);
 
     const totalUsers = allUsersPerformance.length;
     const userRank = allUsersPerformance.findIndex(p => p.userId === userId.toString()) + 1;
     const topperPerformance = allUsersPerformance[0] || { score: 0, timeTaken: 0, accuracy: 0, correct: 0, incorrect: 0 };
 
-    // Calculate Averages from Leaderboard
     const totalScoreSum = allUsersPerformance.reduce((acc, curr) => acc + curr.score, 0);
     const totalTimeSum = allUsersPerformance.reduce((acc, curr) => acc + curr.timeTaken, 0);
 
     const averagePerformance = {
-        avgScore: +(totalScoreSum / totalUsers).toFixed(2),
-        avgTime: Math.round(totalTimeSum / totalUsers),
-        avgAccuracy: 0, // Simplified to avoid loop
-        avgCorrect: 0,  // Simplified
-        avgIncorrect: 0 // Simplified
+        avgScore: totalUsers > 0 ? +(totalScoreSum / totalUsers).toFixed(2) : 0,
+        avgTime: totalUsers > 0 ? Math.round(totalTimeSum / totalUsers) : 0,
+        avgAccuracy: 0, avgCorrect: 0, avgIncorrect: 0 
     };
 
-    // ---------------------------------------------------------
     // 5. RANK LIST & DISTRIBUTION
-    // ---------------------------------------------------------
     const topUserIds = allUsersPerformance.slice(0, 10).map(entry => entry.userId);
     const users = await User.find({ _id: { $in: topUserIds } }).select('name');
     const userMap = new Map(users.map(u => [u._id.toString(), u.name]));
@@ -1079,9 +1124,7 @@ export const getDetailedResult = async (req, res) => {
 
     const { medianScore, marksDistribution } = calculateDistributionStats(allUsersPerformance.map(s => s.score), total);
 
-    // ---------------------------------------------------------
     // 6. QUESTION ANALYSIS
-    // ---------------------------------------------------------
     const questionDetails = staticTest.sections.flatMap(section => 
         section.questions.map(q => {
             const userAns = attempt.answers.find(a => a.questionId.toString() === q._id.toString());
@@ -1099,12 +1142,7 @@ export const getDetailedResult = async (req, res) => {
                 }
             }
             return {
-                questionId: q._id,
-                subject: q.subject,
-                chapter: q.chapter,
-                topic: q.topic,
-                isCorrect,
-                isAttempted
+                questionId: q._id, subject: q.subject, chapter: q.chapter, topic: q.topic, isCorrect, isAttempted
             };
         })
     );
@@ -1113,25 +1151,13 @@ export const getDetailedResult = async (req, res) => {
       testTitle: staticTest.title,
       userName: req.user.name,
       scoreSummary: {
-        userScore: score, // Calculated fresh for precision
+        userScore: score, 
         timeTaken: attempt.answers.reduce((sum, ans) => sum + (ans.timeTaken || 0), 0),
-        accuracy,
-        correct,
-        incorrect,
-        unattempted,
-        totalMarks: total,
-        ...averagePerformance,
-        topScore: topperPerformance.score,
-        topTime: topperPerformance.timeTaken,
+        accuracy, correct, incorrect, unattempted, totalMarks: total,
+        ...averagePerformance, topScore: topperPerformance.score, topTime: topperPerformance.timeTaken,
       },
-      sectionStats,
-      rank: userRank,
-      rankList,
-      marksDistribution,
-      medianScore,
-      cutoff: staticTest.cutoff || {},
-      questionDetails,
-      tags: staticTest.tags || []
+      sectionStats, rank: userRank, rankList, marksDistribution, medianScore,
+      cutoff: staticTest.cutoff || {}, questionDetails, tags: staticTest.tags || []
     });
 
   } catch (err) {
@@ -1141,202 +1167,152 @@ export const getDetailedResult = async (req, res) => {
 };
 
 
-
-
-
 export const getLeaderboard = async (req, res) => {
-  const currentUserId = req.user._id.toString();
-  const { testId } = req.params;
-  const { attempt: attemptQuery, best = 'false', latest = 'false' } = req.query;
+  const currentUserId = req.user._id.toString();
+  const { testId } = req.params;
+  const { attempt: attemptQuery, best = 'false', latest = 'false' } = req.query;
 
-  try {
-    // Step 1: Fetch the test. We don't need to populate questions for the leaderboard.
-    const test = await TestSeries.findById(testId);
-    if (!test) {
-      return res.status(404).json({ message: 'Test not found' });
-    }
+  try {
+    // ✅ NEW: Fetch directly from TestAttempt collection
+    const attempts = await TestAttempt.find({ testSeriesId: testId, isCompleted: true }).lean();
+    
+    if (attempts.length === 0) return res.json([]);
 
-    // Step 2: Group all completed attempts by user ID.
-    const groupedByUser = {};
-    test.attempts.forEach(attempt => {
-      if (!attempt.isCompleted) return; // Skip incomplete attempts
-      const uid = attempt.userId.toString();
-      if (!groupedByUser[uid]) {
-        groupedByUser[uid] = [];
-      }
-      groupedByUser[uid].push(attempt);
-    });
+    const groupedByUser = {};
+    attempts.forEach(attempt => {
+      const uid = attempt.userId.toString();
+      if (!groupedByUser[uid]) groupedByUser[uid] = [];
+      groupedByUser[uid].push(attempt);
+    });
 
-    // Step 3: Select the relevant attempt for each user based on query params.
-    const leaderboardData = [];
-    for (const [userId, attempts] of Object.entries(groupedByUser)) {
-      let selectedAttempt;
+    const leaderboardData = [];
+    for (const [userId, userAttempts] of Object.entries(groupedByUser)) {
+      let selectedAttempt;
 
-      if (attemptQuery) {
-        // Find a specific attempt number
-        selectedAttempt = attempts.find(a => a.attemptNumber === parseInt(attemptQuery));
-      } else if (best === 'true') {
-        // Find the attempt with the highest score
-        // ✅ OPTIMIZATION: Uses the pre-calculated 'score' field, does not call calcScore()
-        selectedAttempt = attempts.reduce((bestSoFar, current) => {
-          return current.score > (bestSoFar ? bestSoFar.score : -Infinity) ? current : bestSoFar;
-        }, null);
-      } else if (latest === 'true') {
-        // Find the most recent attempt
-        selectedAttempt = attempts.reduce((latestSoFar, current) => {
-          return current.startedAt > latestSoFar.startedAt ? current : latestSoFar;
-        }, attempts[0]);
-      } else {
-        // Default to the first attempt if no filter is specified
-        selectedAttempt = attempts.find(a => a.attemptNumber === 1);
-      }
+      if (attemptQuery) {
+        selectedAttempt = userAttempts.find(a => a.attemptNumber === parseInt(attemptQuery));
+      } else if (best === 'true') {
+        selectedAttempt = userAttempts.reduce((bestSoFar, current) => {
+          return current.score > (bestSoFar ? bestSoFar.score : -Infinity) ? current : bestSoFar;
+        }, null);
+      } else if (latest === 'true') {
+        selectedAttempt = userAttempts.reduce((latestSoFar, current) => {
+          return current.startedAt > latestSoFar.startedAt ? current : latestSoFar;
+        }, userAttempts[0]);
+      } else {
+        selectedAttempt = userAttempts.find(a => a.attemptNumber === 1);
+      }
 
-      if (selectedAttempt) {
-        leaderboardData.push({
-          userId: userId,
-          score: selectedAttempt.score || 0, // Use the saved score
-        });
-      }
-    }
+      if (selectedAttempt) {
+        leaderboardData.push({ userId: userId, score: selectedAttempt.score || 0 });
+      }
+    }
 
-    // Step 4: Sort the results by score in descending order.
-    leaderboardData.sort((a, b) => b.score - a.score);
+    leaderboardData.sort((a, b) => b.score - a.score);
 
-    // Step 5: Efficiently fetch user names for the leaderboard.
-    // ✅ BUG FIX & PERFORMANCE: Fixes the N+1 query problem.
-    const userIds = leaderboardData.map(entry => entry.userId);
-    const users = await User.find({ _id: { $in: userIds } }).select('name');
-    const userMap = new Map(users.map(u => [u._id.toString(), u.name]));
+    const userIds = leaderboardData.map(entry => entry.userId);
+    const users = await User.find({ _id: { $in: userIds } }).select('name');
+    const userMap = new Map(users.map(u => [u._id.toString(), u.name]));
 
-    // Step 6: Construct the final rank list.
-    const rankList = leaderboardData.map((entry, index) => ({
-      rank: index + 1,
-      name: userMap.get(entry.userId) || 'Unknown User',
-      score: entry.score,
-      isUser: entry.userId === currentUserId, // Flag if this is the currently logged-in user
-    }));
+    const rankList = leaderboardData.map((entry, index) => ({
+      rank: index + 1,
+      name: userMap.get(entry.userId) || 'Unknown User',
+      score: entry.score,
+      isUser: entry.userId === currentUserId,
+    }));
 
-    res.json(rankList);
-
-  } catch (err) {
-    console.error('Leaderboard error:', err.message);
-    res.status(500).json({ message: 'Failed to load leaderboard' });
-  }
+    res.json(rankList);
+  } catch (err) {
+    console.error('Leaderboard error:', err.message);
+    res.status(500).json({ message: 'Failed to load leaderboard' });
+  }
 };
-
-
-
-
 
 
 export const getAllAttemptsSummary = async (req, res) => {
-  const { testId } = req.params;
+  const { testId } = req.params;
 
-  try {
-    const test = await TestSeries.findById(testId)
-      .populate(detailedQuestionPopulation)
-      .populate('attempts.userId', 'name');
-    if (!test) return res.status(404).json({ message: 'Test not found' });
+  try {
+    const test = await TestSeries.findById(testId).select('title').lean();
+    if (!test) return res.status(404).json({ message: 'Test not found' });
 
-    const grouped = {};
+    // ✅ NEW: Populate User directly from TestAttempt
+    const attempts = await TestAttempt.find({ testSeriesId: testId, isCompleted: true })
+        .populate('userId', 'name')
+        .lean();
 
-    test.attempts
-      .filter(a => a.isCompleted)
-      .forEach((a) => {
-        if (!grouped[a.attemptNumber]) {
-          grouped[a.attemptNumber] = {
-            attemptNumber: a.attemptNumber,
-            date: a.endedAt,
-            users: []
-          };
-        }
+    const grouped = {};
+    attempts.forEach((a) => {
+        if (!grouped[a.attemptNumber]) {
+          grouped[a.attemptNumber] = { attemptNumber: a.attemptNumber, date: a.endedAt, users: [] };
+        }
+        grouped[a.attemptNumber].users.push({
+          userId: a.userId._id,
+          name: a.userId.name,
+          score: a.score, // Use pre-calculated score
+          endedAt: a.endedAt
+        });
+    });
 
-        const { score } = calcScore(a.answers, test);
+    const response = Object.values(grouped)
+      .sort((a, b) => a.attemptNumber - b.attemptNumber)
+      .map(group => {
+        group.users.sort((a, b) => b.score - a.score);
+        return {
+          ...group,
+          users: group.users.map((u, idx) => ({ ...u, rank: idx + 1 }))
+        };
+      });
 
-        grouped[a.attemptNumber].users.push({
-          userId: a.userId._id,
-          name: a.userId.name,
-          score,
-          endedAt: a.endedAt
-        });
-      });
-
-    const response = Object.values(grouped)
-      .sort((a, b) => a.attemptNumber - b.attemptNumber)
-      .map(group => {
-        group.users.sort((a, b) => b.score - a.score);
-        return {
-          ...group,
-          users: group.users.map((u, idx) => ({
-            ...u,
-            rank: idx + 1
-          }))
-        };
-      });
-
-    res.json(response);
-  } catch (err) {
-    console.error('getAllAttemptsSummary Error:', err.message);
-    res.status(500).json({ message: 'Failed to fetch summary' });
-  }
+    res.json(response);
+  } catch (err) {
+    console.error('getAllAttemptsSummary Error:', err.message);
+    res.status(500).json({ message: 'Failed to fetch summary' });
+  }
 };
 
 
-// GET: Fetch current user's attempt for a test
 export const getUserAttemptForTest = async (req, res) => {
-  const userId = req.user._id;
-  const { testId } = req.params;
+  const userId = req.user._id;
+  const { testId } = req.params;
 
-  try {
-    const test = await TestSeries.findById(testId);
-    if (!test) return res.status(404).json({ message: 'Test not found' });
+  try {
+    // ✅ NEW: Direct query, incredibly fast
+    const attempts = await TestAttempt.find({ testSeriesId: testId, userId })
+        .sort({ attemptNumber: 1 })
+        .lean();
 
-    const attempts = test.attempts.filter(
-      (a) => a.userId.toString() === userId.toString()
-    );
+    if (!attempts.length) {
+      return res.status(404).json({ message: 'No attempts found for user' });
+    }
 
-    if (!attempts.length) {
-      return res.status(404).json({ message: 'No attempts found for user' });
-    }
-
-    attempts.sort((a, b) => a.attemptNumber - b.attemptNumber);
-
-    res.status(200).json(attempts);
-  } catch (err) {
-    console.error('getUserAttemptForTest error:', err.message);
-    res.status(500).json({ message: 'Error fetching user attempts' });
-  }
+    res.status(200).json(attempts);
+  } catch (err) {
+    console.error('getUserAttemptForTest error:', err.message);
+    res.status(500).json({ message: 'Error fetching user attempts' });
+  }
 };
 
 
 export const getSolutionForTest = async (req, res) => {
   const { testId } = req.params;
   const { attemptId } = req.query;
-  const redis = req.redis; // Ensure this is available from middleware
+  const redis = req.redis;
 
   try {
-    // -----------------------------------------------------------
-    // 1. CACHE STRATEGY: Fetch Static Content (Questions, Explanations)
-    // -----------------------------------------------------------
-    // We try to get the "Question Paper" from Redis first.
     const cacheKey = `SOLUTION_STATIC_V1:${testId}`;
     let staticTest = await redis.get(cacheKey);
 
     if (!staticTest) {
-      // ⚠️ Cache Miss: Fetch from DB (Heavy Query)
-      // Note: We EXCLUDE 'attempts' here to save memory.
       const testDoc = await TestSeries.findById(testId)
-        .select('-attempts') 
         .populate({
           path: 'sections.questions',
           select: 'questionText questionImage options correctAnswer questionType explanation explanationImage answerMin answerMax groupId marks negativeMarks',
           populate: { path: 'groupId', select: 'directionText directionImage type' }
-        })
-        .lean(); // Use lean() for speed
+        }).lean();
 
       if (!testDoc) return res.status(404).json({ message: 'Test not found' });
 
-      // Handle Hindi Logic (Static)
       testDoc.sections.forEach(section => {
          const hasHindi = section.questions.some(q => 
             (q.questionText?.hi && q.questionText.hi.trim() !== '') ||
@@ -1347,84 +1323,50 @@ export const getSolutionForTest = async (req, res) => {
       });
 
       staticTest = testDoc;
-      // Save to Redis for 24 Hours
       await redis.set(cacheKey, JSON.stringify(staticTest), { ex: 86400 });
     } else {
-        // Parse if it came from Redis
         if (typeof staticTest === 'string') staticTest = JSON.parse(staticTest);
     }
 
-    // -----------------------------------------------------------
-    // 2. FETCH DYNAMIC USER ATTEMPT (Lightweight)
-    // -----------------------------------------------------------
-    // We use projection to fetch ONLY the specific attempt.
-    const attemptDoc = await TestSeries.findOne(
-        { _id: testId },
-        { attempts: { $elemMatch: { _id: attemptId } } } 
-    ).lean();
-
-    if (!attemptDoc || !attemptDoc.attempts || attemptDoc.attempts.length === 0) {
-        return res.status(404).json({ message: 'Attempt not found' });
-    }
-    const selectedAttempt = attemptDoc.attempts[0];
-
-    // -----------------------------------------------------------
-    // 3. STATS STRATEGY (Simplified for Performance)
-    // -----------------------------------------------------------
-    // Calculating "Accuracy %" on the fly for 1000 users is too slow.
-    // Ideally, fetch pre-calculated stats from Redis.
-    // For now, we return empty stats or fetch from cache if available.
-    const statsKey = `TEST_STATS_V1:${testId}`;
-    let questionStats = await redis.get(statsKey);
-    
-    if (!questionStats) {
-        questionStats = {}; // Return empty to avoid timeout
-    } else if (typeof questionStats === 'string') {
-        questionStats = JSON.parse(questionStats);
+    // ---------------------------------------------------------
+    // ✅ NEW: BLOCK SOLUTIONS FOR PENDING LIVE TESTS
+    // ---------------------------------------------------------
+    if (staticTest.isLiveTest && new Date() < new Date(staticTest.resultPublishTime)) {
+        return res.status(403).json({
+            message: "Solutions and Ranks are hidden to prevent cheating while the Live Test window is still open.",
+            resultPublishTime: staticTest.resultPublishTime
+        });
     }
 
-    // -----------------------------------------------------------
-    // 4. REPORT STATUS INJECTION
-    // -----------------------------------------------------------
+    // ✅ Fetch attempt directly from the new TestAttempt collection
+    const selectedAttempt = await TestAttempt.findById(attemptId).lean();
+    if (!selectedAttempt) return res.status(404).json({ message: 'Attempt not found' });
+
+    // ✅ NEW: Security Check - Only the owner or an admin can view this attempt
+    if (selectedAttempt.userId.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+         return res.status(403).json({ message: 'Unauthorized to view this attempt' });
+    }
+
+    let questionStats = await redis.get(`TEST_STATS_V1:${testId}`) || {};
+    if (typeof questionStats === 'string') questionStats = JSON.parse(questionStats);
+
     if (req.user) {
-       const allQuestionIds = staticTest.sections.flatMap(section => 
-           section.questions.map(q => q._id)
-       );
-       
-       const userReports = await QuestionReport.find({
-           userId: req.user._id,
-           questionId: { $in: allQuestionIds }
-       }).select('questionId status').lean();
-
+       const allQuestionIds = staticTest.sections.flatMap(section => section.questions.map(q => q._id));
+       const userReports = await QuestionReport.find({ userId: req.user._id, questionId: { $in: allQuestionIds } }).select('questionId status').lean();
        const reportMap = new Map();
        userReports.forEach(r => reportMap.set(r.questionId.toString(), r.status));
-
        staticTest.sections.forEach(section => {
-           section.questions.forEach(q => {
-               q.reportStatus = reportMap.get(q._id.toString()) || null;
-           });
+           section.questions.forEach(q => { q.reportStatus = reportMap.get(q._id.toString()) || null; });
        });
     }
 
-    // -----------------------------------------------------------
-    // 5. PREPARE RESPONSE
-    // -----------------------------------------------------------
     const responses = {};
     selectedAttempt.answers.forEach(ans => {
         responses[ans.questionId.toString()] = ans.selectedOptions;
     });
 
-    // We attach the single attempt to the test object so frontend logic works
-    const finalTest = {
-        ...staticTest,
-        attempts: [selectedAttempt] 
-    };
-
-    res.status(200).json({
-      test: finalTest,
-      responses,
-      questionStats,
-    });
+    const finalTest = { ...staticTest, attempts: [selectedAttempt] };
+    res.status(200).json({ test: finalTest, responses, questionStats });
 
   } catch (err) {
     console.error('Get Solution Error:', err.message);
@@ -1433,85 +1375,76 @@ export const getSolutionForTest = async (req, res) => {
 };
 
 
-
 export const getLatestAttemptSummaries = async (req, res) => {
-  const userId = req.user._id;
+  const userId = req.user._id;
 
-  try {
-    const tests = await TestSeries.find({ 'attempts.userId': userId }).populate('sections.questions');
-    const latestAttempts = [];
+  try {
+    // ✅ NEW: MongoDB Aggregation is perfectly suited for this now.
+    const latestAttempts = await TestAttempt.aggregate([
+      { $match: { userId: new mongoose.Types.ObjectId(userId), isCompleted: true } },
+      { $sort: { endedAt: -1 } },
+      {
+        $group: {
+          _id: "$testSeriesId",
+          latestAttempt: { $first: "$$$ROOT" }
+        }
+      },
+      {
+        $lookup: {
+          from: "testseries",
+          localField: "_id",
+          foreignField: "_id",
+          as: "testDetails"
+        }
+      },
+      { $unwind: "$testDetails" },
+      {
+        $project: {
+          _id: 0,
+          testId: "$_id",
+          testTitle: "$testDetails.title",
+          totalMarks: "$latestAttempt.totalMarks",
+          marks: "$latestAttempt.score",
+          attemptNumber: "$latestAttempt.attemptNumber",
+          endedAt: "$latestAttempt.endedAt",
+          cutoffs: "$testDetails.cutoff"
+        }
+      }
+    ]);
 
-    for (const test of tests) {
-      const userAttempts = test.attempts
-        .filter(a => a.userId.toString() === userId.toString() && a.isCompleted)
-        .sort((a, b) => new Date(b.endedAt) - new Date(a.endedAt));
-
-      if (!userAttempts.length) continue;
-
-      const latest = userAttempts[0];
-      const { score, totalMarks } = calcScore(latest.answers, test);
-
-      const allScores = test.attempts
-        .filter(a => a.isCompleted && a.attemptNumber === latest.attemptNumber)
-        .map(a => ({
-          userId: a.userId.toString(),
-          ...calcScore(a.answers, test)
-        }))
-        .sort((a, b) => b.score - a.score);
-
-      const rank = allScores.findIndex(s => s.userId === userId.toString()) + 1;
-
-      latestAttempts.push({
-        testId: test._id,
-        testTitle: test.title,
-        totalMarks,
-        marks: score,
-        rank,
-        attemptNumber: latest.attemptNumber,
-        endedAt: latest.endedAt,
-        cutoffs: test.cutoff || {}
-      });
-    }
-
-    res.json(latestAttempts);
-  } catch (err) {
-    console.error('getLatestAttemptSummaries error:', err);
-    res.status(500).json({ message: 'Failed to load latest attempts summary' });
-  }
+    res.json(latestAttempts);
+  } catch (err) {
+    console.error('getLatestAttemptSummaries error:', err);
+    res.status(500).json({ message: 'Failed to load latest attempts summary' });
+  }
 };
 
+
 export const getRankDistribution = async (req, res) => {
-    try {
-        const { testId } = req.params;
-        const { attempt: attemptNumber } = req.query;
+    try {
+        const { testId } = req.params;
+        const { attempt: attemptNumber } = req.query;
 
-        const test = await TestSeries.findById(testId).populate(detailedQuestionPopulation);
-        if (!test) return res.status(404).json({ message: 'Test not found' });
+        // ✅ NEW: Extremely fast direct query
+        const attemptsForSession = await TestAttempt.find({ 
+            testSeriesId: testId, 
+            isCompleted: true, 
+            attemptNumber: parseInt(attemptNumber) 
+        }).select('userId score').sort({ score: -1 }).lean();
 
-        const attemptsForSession = test.attempts.filter(a => a.isCompleted && a.attemptNumber === parseInt(attemptNumber));
+        if (attemptsForSession.length === 0) return res.json([]);
 
-        if (attemptsForSession.length === 0) {
-            return res.json([]);
-        }
+        const rankDistribution = attemptsForSession.map((entry, index) => ({
+            rank: index + 1,
+            score: entry.score,
+        }));
 
-        const allScores = attemptsForSession.map(a => {
-            const { score } = calcScore(a.answers, test);
-            return { userId: a.userId.toString(), score };
-        });
-
-        allScores.sort((a, b) => b.score - a.score);
-
-        const rankDistribution = allScores.map((entry, index) => ({
-            rank: index + 1,
-            score: entry.score,
-        }));
-
-        res.json(rankDistribution);
-
-    } catch (err) {
-        console.error('Get Rank Distribution Error:', err.message);
-        res.status(500).json({ error: 'Server error while fetching rank distribution' });
-    }};
+        res.json(rankDistribution);
+    } catch (err) {
+        console.error('Get Rank Distribution Error:', err.message);
+        res.status(500).json({ error: 'Server error while fetching rank distribution' });
+    }
+};
 
 
 
@@ -1530,7 +1463,10 @@ export const updateTestStatus = async (req, res) => {
 
         // --- SAFETY RULES ---
         // Rule 1: A test that has attempts can never go back to 'draft'.
-        if (test.attempts && test.attempts.length > 0 && status === 'draft') {
+        // ✅ NEW: Count the standalone attempts directly
+        const attemptCount = await TestAttempt.countDocuments({ testSeriesId: test._id });
+        
+        if (attemptCount > 0 && status === 'draft') {
             return res.status(400).json({ message: 'A test that has been attempted cannot be moved back to draft.' });
         }
         
@@ -1542,8 +1478,6 @@ export const updateTestStatus = async (req, res) => {
         test.status = status;
         await test.save();
 
-        // Optional: Add notification logic here if a test is published
-        
         res.json({ message: `Test status updated to '${status}'` });
     } catch (error) {
         res.status(500).json({ message: 'Server error while updating status.' });

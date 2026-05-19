@@ -13,6 +13,7 @@ const { Server } = require('socket.io');
 const admin = require('firebase-admin');
 const { Redis } = require('@upstash/redis');
 const cron = require('node-cron');
+const { initializeLiveTestCron } = require('./utils/liveTestCron');
 
 
 // --- INITIALIZE FIREBASE ADMIN SDK ---
@@ -251,10 +252,19 @@ const PORT = process.env.PORT || 8000;
 
 const startServer = async () => {
     try {
-        await mongoose.connect(process.env.MONGO_URL);
-        console.log('✅ MongoDB connected successfully.');
+        // ✅ DYNAMIC DB SWITCHING: Protects Production Data
+        const isTestEnv = process.env.NODE_ENV === 'test';
+        const dbURI = isTestEnv ? process.env.MONGO_URL_TEST : process.env.MONGO_URL;
+        
+        await mongoose.connect(dbURI);
+        console.log(`✅ MongoDB connected successfully to: ${isTestEnv ? 'QA SANDBOX' : 'MAIN DB'}`);
+        
+        // ✅ START THE LIVE TEST ENGINE
+        // Pass your existing redis instance to it so it can clear caches
+        initializeLiveTestCron(redis); 
+
         server.listen(PORT, '0.0.0.0', () => {
-            console.log(`🚀 Server running on port ${PORT}`);
+            console.log(`🚀 Server running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode.`);
         });
     } catch (err) {
         console.error('❌ Failed to connect to MongoDB!', err);

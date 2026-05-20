@@ -1,13 +1,13 @@
 import TestSeriesGroup from '../models/testSeriesGroupModel.js';
 import TestSeries from '../models/testSeriesModel.js';
+// ✅ NEW: Import the standalone TestAttempt model
+import TestAttempt from '../models/TestAttempt.js';
 
 // Create new group
 export const createTestSeriesGroup = async (req, res) => {
   try {
-    // Get all the data from the request, including the array of original test IDs
     const { name, description, imageUrl, testSeries, tags } = req.body;
 
-    // Create the new group and directly assign the array of original test series IDs
     const newGroup = new TestSeriesGroup({
       name,
       description,
@@ -16,9 +16,7 @@ export const createTestSeriesGroup = async (req, res) => {
       tags: tags || [], 
     });
 
-    // Save the new group with the correct references
     const savedGroup = await newGroup.save();
-
     res.status(201).json(savedGroup);
   } catch (err) {
     console.error('Create TestSeriesGroup Error:', err.message);
@@ -26,17 +24,13 @@ export const createTestSeriesGroup = async (req, res) => {
   }
 };
 
-
 // Get all groups
-
 export const getAllTestSeriesGroups = async (req, res) => {
   try {
     const groupsWithCounts = await TestSeriesGroup.aggregate([
-      // Stage 1: Sort the groups first
       {
         $sort: { createdAt: -1 }
       },
-      // Stage 2: Perform the equivalent of populate('testSeries')
       {
         $lookup: {
           from: 'testseries', // The name of the test series collection in MongoDB
@@ -45,7 +39,6 @@ export const getAllTestSeriesGroups = async (req, res) => {
           as: 'testSeriesDetails'
         }
       },
-      // Stage 3: Add the new fields for free and paid counts
       {
         $addFields: {
           freeCount: {
@@ -68,7 +61,6 @@ export const getAllTestSeriesGroups = async (req, res) => {
           }
         }
       },
-      
       {
         $project: {
           name: 1,
@@ -92,16 +84,11 @@ export const getAllTestSeriesGroups = async (req, res) => {
 };
 
 
-
-
-
-// ✅ Corrected: Get group by ID
+// ✅ FIXED: Get group by ID and calculate ranks using TestAttempt collection
 export const getTestSeriesGroupById = async (req, res) => {
     try {
-        const group = await TestSeriesGroup.findById(req.params.id).populate({
-            path: 'testSeries',
-            populate: { path: 'attempts.userId', select: '_id' },
-        });
+        // 1. Fetch group without trying to populate 'attempts'
+        const group = await TestSeriesGroup.findById(req.params.id).populate('testSeries');
 
         if (!group) {
             return res.status(404).json({ error: 'Group not found' });
@@ -109,14 +96,27 @@ export const getTestSeriesGroupById = async (req, res) => {
 
         const userId = req.user?._id?.toString();
         const validTests = group.testSeries.filter(test => test && test._id);
+        const testIds = validTests.map(t => t._id);
+
+        // 2. Fetch User Attempts from the NEW TestAttempt collection
+        const userAttempts = await TestAttempt.find({
+            userId: userId,
+            testSeriesId: { $in: testIds }
+        }).lean();
+
+        // 3. Fetch ALL completed attempts for these tests to calculate leaderboards instantly
+        const allCompletedAttempts = await TestAttempt.find({
+            testSeriesId: { $in: testIds },
+            isCompleted: true
+        }).select('_id testSeriesId attemptNumber score').lean();
 
         const groupWithUserStatus = {
             ...group.toObject(),
             testSeries: validTests.map(test => {
                 const testObj = test.toObject();
-                const userAttempts =
-                    test.attempts?.filter(a => a.userId?._id?.toString() === userId) ||
-                    [];
+                
+                // Filter attempts for THIS specific test
+                const currentTestUserAttempts = userAttempts.filter(a => a.testSeriesId.toString() === test._id.toString());
 
                 let status = 'not-started';
                 let mainAttemptId = null;
@@ -124,9 +124,9 @@ export const getTestSeriesGroupById = async (req, res) => {
                 let userPerformance = {};
                 let inProgressAttemptId = null;
 
-                if (userAttempts.length > 0) {
-                    const inProgressAttempt = userAttempts.find(a => !a.isCompleted);
-                    const latestCompletedAttempt = userAttempts
+                if (currentTestUserAttempts.length > 0) {
+                    const inProgressAttempt = currentTestUserAttempts.find(a => !a.isCompleted);
+                    const latestCompletedAttempt = currentTestUserAttempts
                         .filter(a => a.isCompleted)
                         .sort((a, b) => new Date(b.endedAt) - new Date(a.endedAt))[0];
                     
@@ -135,17 +135,15 @@ export const getTestSeriesGroupById = async (req, res) => {
                         mainAttemptId = latestCompletedAttempt._id;
                         attemptNumber = latestCompletedAttempt.attemptNumber;
 
-                        const leaderboard = test.attempts
-                            .filter(a => a.isCompleted && a.attemptNumber === latestCompletedAttempt.attemptNumber)
+                        // Calculate Rank in Memory (Lightning Fast)
+                        const leaderboard = allCompletedAttempts
+                            .filter(a => a.testSeriesId.toString() === test._id.toString() && a.attemptNumber === latestCompletedAttempt.attemptNumber)
                             .sort((a, b) => (b.score || 0) - (a.score || 0));
                         
                         const totalUsersInAttempt = leaderboard.length;
-                        const rankIndex = leaderboard.findIndex(u => u._id.equals(latestCompletedAttempt._id));
+                        const rankIndex = leaderboard.findIndex(u => u._id.toString() === latestCompletedAttempt._id.toString());
                         const userRank = rankIndex > -1 ? rankIndex + 1 : '-';
 
-                        // --- THIS IS THE FIX ---
-                        // We are now adding the correct `totalMarks` from the user's attempt
-                        // to the data we send to the frontend.
                         userPerformance = {
                             marks: latestCompletedAttempt.score,
                             totalMarks: latestCompletedAttempt.totalMarks, 
@@ -181,11 +179,6 @@ export const getTestSeriesGroupById = async (req, res) => {
     }
 };
 
-
-
-
-
-
 // Update group
 export const updateTestSeriesGroup = async (req, res) => {
   try {
@@ -214,7 +207,6 @@ export const deleteTestSeriesGroup = async (req, res) => {
   }
 };
 
-
 // Get full list of test series groups with populated test series
 export const getFullTestSeriesGroups = async (req, res) => {
   try {
@@ -229,17 +221,22 @@ export const getFullTestSeriesGroups = async (req, res) => {
   }
 };
 
-
-
-// ✅ Get recent test groups based on user's latest attempts
+// ✅ FIXED: Get recent test groups based on user's latest attempts via TestAttempt
 export const getRecentTestSeriesGroups = async (req, res) => {
   try {
     const userId = req.user._id;
 
-    // Get the latest 8 attempts by the user
-    const recentTests = await TestSeries.find({ 'attempts.userId': userId })
+    // 1. Fetch latest attempts from TestAttempt collection
+    const recentAttempts = await TestAttempt.find({ userId })
       .sort({ updatedAt: -1 })
       .limit(10)
+      .select('testSeriesId')
+      .lean();
+
+    const uniqueTestIds = [...new Set(recentAttempts.map(a => a.testSeriesId.toString()))];
+
+    // 2. Find the tests to get their groupIds
+    const recentTests = await TestSeries.find({ _id: { $in: uniqueTestIds } })
       .select('_id groupId title')
       .lean();
 
@@ -258,18 +255,16 @@ export const getRecentTestSeriesGroups = async (req, res) => {
   }
 };
 
-
 export const getPublishedGroupsWithTests = async (req, res) => {
     try {
         const groups = await TestSeriesGroup.find()
             .populate({
                 path: 'testSeries',
-                match: { status: 'published' }, // This only includes tests that are 'published'
-                select: 'title description exam totalMarks isPaid status' // Selects only the fields needed for the list
+                match: { status: 'published' },
+                select: 'title description exam totalMarks isPaid status' 
             })
-            .sort({ createdAt: -1 }); // Sorts the groups by most recently created
+            .sort({ createdAt: -1 }); 
 
-        // This is a good practice: it removes any groups that have no published tests
         const activeGroups = groups.filter(group => group.testSeries.length > 0);
 
         res.json(activeGroups);
@@ -279,10 +274,8 @@ export const getPublishedGroupsWithTests = async (req, res) => {
     }
 };
 
-
 export const getPublicTestSeriesGroupById = async (req, res) => {
     try {
-        // Just fetch group metadata. Tests are fetched via a separate public API.
         const group = await TestSeriesGroup.findById(req.params.id).select('name description imageUrl examCategory tags');
 
         if (!group) {

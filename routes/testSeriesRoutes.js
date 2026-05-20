@@ -24,7 +24,9 @@ const {
     updateTestStatus, 
     getPublicTestsByGroupId,
     getFilterOptions,
-    registerForLiveTest
+    registerForLiveTest,
+    checkLiveRegistration,
+    unregisterLiveTest
 } = require('../controllers/testSeriesController');
 
 const { protect, adminOnly } = require('../middleware/authMiddleware');
@@ -67,6 +69,9 @@ router.post('/start', protect, logHighValueEvent('TEST_STARTED'), startTestSecur
 
 // Public Test List Route (No Auth)
 router.get('/public/group/:groupId', getPublicTestsByGroupId);
+
+router.get('/:id/check-registration', protect, checkLiveRegistration);
+router.post('/:id/unregister-live', protect, unregisterLiveTest);
 
 // Routes with parameters
 router.get('/result/:attemptId', protect, getDetailedResult);

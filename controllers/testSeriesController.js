@@ -70,6 +70,73 @@ export const registerForLiveTest = async (req, res) => {
     }
 };
 
+
+// ---------------------------------------------------------
+// ✅ NEW: CHECK LIVE REGISTRATION STATUS (Prevents refresh issues)
+// ---------------------------------------------------------
+export const checkLiveRegistration = async (req, res) => {
+    try {
+        const testSeriesId = req.params.id;
+        const userId = req.user._id;
+
+        const existingRegistration = await LiveRegistration.findOne({ 
+            testSeriesId: testSeriesId, 
+            userId: userId 
+        });
+
+        res.json({ isRegistered: !!existingRegistration });
+    } catch (error) {
+        console.error("Check Registration Error:", error);
+        res.status(500).json({ message: "Error checking registration status" });
+    }
+};
+
+
+
+export const unregisterLiveTest = async (req, res) => {
+    try {
+        const testId = req.params.id;
+        const userId = req.user._id;
+
+        // 1. Verify the test exists
+        const test = await TestSeries.findById(testId);
+        if (!test) {
+            return res.status(404).json({ message: 'Test not found.' });
+        }
+
+        // Optional: Prevent unregistering if the test window has already started
+        const now = new Date();
+        const startTime = new Date(test.testWindowStartTime);
+        if (now >= startTime) {
+            return res.status(400).json({ message: 'Cannot unregister after the live test window has opened.' });
+        }
+
+        // 2. Find and delete the registration (FIXED FIELD NAME HERE)
+        const deletedRegistration = await LiveRegistration.findOneAndDelete({
+            testSeriesId: testId,
+            userId: userId
+        });
+
+        if (!deletedRegistration) {
+            return res.status(400).json({ message: 'You are not registered for this test.' });
+        }
+
+        // 3. Update Denormalized Count (Optional, but keeps your UI count accurate)
+        await TestSeries.findByIdAndUpdate(testId, { $inc: { registeredUsersCount: -1 } });
+
+        res.status(200).json({ 
+            success: true, 
+            message: 'Successfully unregistered from the Live Test.' 
+        });
+
+    } catch (error) {
+        console.error('Error unregistering from live test:', error);
+        res.status(500).json({ message: 'Server error during unregistration.' });
+    }
+};
+
+
+
 export const createTestSeries = async (req, res) => {
     try {
         const { sections, testDurationInMinutes } = req.body;
@@ -1407,7 +1474,12 @@ export const getLatestAttemptSummaries = async (req, res) => {
           marks: "$latestAttempt.score",
           attemptNumber: "$latestAttempt.attemptNumber",
           endedAt: "$latestAttempt.endedAt",
-          cutoffs: "$testDetails.cutoff"
+          cutoffs: "$testDetails.cutoff",
+          
+          // ✅ Make sure ALL THREE of these are here:
+          isLiveTest: "$testDetails.isLiveTest", 
+          isResultPending: "$latestAttempt.isResultPending",
+          resultPublishTime: "$testDetails.resultPublishTime"
         }
       }
     ]);

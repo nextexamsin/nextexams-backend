@@ -152,17 +152,17 @@ const sendOtp = async (req, res) => {
         if (isSignUp) {
             // ... (your existing domain validation logic is unchanged)
             const allowedDomains = [
-                'gmail.com', 'outlook.com', 'hotmail.com', 'live.com', 'msn.com',
-                'yahoo.com', 'yahoo.co.in', 'yahoo.co.uk', 'yahoo.ca',
-                'icloud.com', 'me.com', 'mac.com', 'aol.com', 'zoho.com', 
-                'protonmail.com', 'gmx.com', 'yandex.com'
-            ];
-            const emailDomain = email.split('@')[1];
-            if (!allowedDomains.includes(emailDomain)) {
-                return res.status(400).json({ 
-                    message: "To prevent spam, we only allow sign-ups from major email providers like Gmail, Outlook, Yahoo, and iCloud." 
-                });
-            }
+                'gmail.com', 'outlook.com', 'hotmail.com', 'live.com', 'msn.com',
+                'yahoo.com', 'yahoo.co.in', 'yahoo.co.uk', 'yahoo.ca',
+                'icloud.com', 'me.com', 'mac.com', 'aol.com', 'zoho.com', 
+                'protonmail.com', 'gmx.com', 'yandex.com'
+            ];
+            const emailDomain = email.split('@')[1];
+            if (!allowedDomains.includes(emailDomain)) {
+                return res.status(400).json({ 
+                    message: "To prevent spam, we only allow sign-ups from major email providers like Gmail, Outlook, Yahoo, and iCloud." 
+                });
+            }
         }
 
         // --- MODIFIED: Find or Create User Logic ---
@@ -968,31 +968,19 @@ const getUserProfile = async (req, res) => {
     }
 };
 
-
+// --- MODIFIED getUserAnalytics (Uses TestAttempt) ---
 const getUserAnalytics = async (req, res) => {
     try {
         const userId = req.user._id;
 
-        // Query 1: Get all COMPLETED attempts and their associated data
-        const testsWithCompletedAttempts = await TestSeries.find({
-            'attempts.userId': userId,
-            'attempts.isCompleted': true
-        })
-        .populate({
-            path: 'sections.questions',
-            model: 'Question',
-            select: 'subject topic correctOptions'
-        })
-        .lean();
+        // 1. Fetch all attempts from the new TestAttempt collection
+        const userAttempts = await TestAttempt.find({ userId }).lean();
         
-        // --- FIX 1: Add a new query to count in-progress tests ---
-        const inProgressCount = await TestSeries.countDocuments({
-            'attempts.userId': userId,
-            'attempts.isCompleted': false
-        });
+        const completedAttemptsDB = userAttempts.filter(a => a.isCompleted);
+        const inProgressCount = userAttempts.filter(a => !a.isCompleted).length;
 
-        // If there are no attempts at all, return a default empty state
-        if (testsWithCompletedAttempts.length === 0 && inProgressCount === 0) {
+        // If there are no attempts at all, return the default empty state
+        if (userAttempts.length === 0) {
             return res.json({
                 overallStats: { totalTestsAttempted: 0, completedTests: 0, inProgressTests: 0, averageScore: 0, overallAccuracy: 0 },
                 performanceTrend: [],
@@ -1001,20 +989,34 @@ const getUserAnalytics = async (req, res) => {
             });
         }
 
+        // 2. Extract unique test IDs and fetch the actual test details (to get Subject & Topic data)
+        const testIds = [...new Set(completedAttemptsDB.map(a => a.testSeriesId.toString()))];
+        
+        const tests = await TestSeries.find({ _id: { $in: testIds } })
+            .select('title sections')
+            .populate({
+                path: 'sections.questions',
+                model: 'Question',
+                select: 'subject topic correctOptions'
+            })
+            .lean();
+
+        const testMap = new Map(tests.map(t => [t._id.toString(), t]));
+
+        // 3. Rebuild the completed attempts array with the populated question data
         let completedAttempts = [];
-        testsWithCompletedAttempts.forEach(test => {
-            test.attempts.forEach(attempt => {
-                if (attempt.isCompleted && String(attempt.userId) === String(userId)) {
-                    completedAttempts.push({
-                        ...attempt,
-                        testName: test.title,
-                        questionsData: test.sections.flatMap(s => s.questions)
-                    });
-                }
-            });
+        completedAttemptsDB.forEach(attempt => {
+            const test = testMap.get(attempt.testSeriesId.toString());
+            if (test) {
+                completedAttempts.push({
+                    ...attempt,
+                    testName: test.title,
+                    questionsData: test.sections.flatMap(s => s.questions)
+                });
+            }
         });
         
-        // --- FIX 2: Correctly calculate all stats ---
+        // 4. Calculate Overall Stats
         const completedTestsCount = completedAttempts.length;
         const totalTestsAttempted = completedTestsCount + inProgressCount;
         
@@ -1030,7 +1032,7 @@ const getUserAnalytics = async (req, res) => {
             overallAccuracy,
         };
 
-        // --- The rest of the function remains the same ---
+        // 5. Calculate Performance Trend
         const performanceTrend = completedAttempts
             .sort((a, b) => new Date(b.endedAt) - new Date(a.endedAt))
             .slice(0, 10)
@@ -1042,6 +1044,7 @@ const getUserAnalytics = async (req, res) => {
             }))
             .reverse();
 
+        // 6. Calculate Subject & Topic Wise Performance
         const performanceBySubject = {};
         const performanceByTopic = {};
 
@@ -1097,6 +1100,7 @@ const getUserAnalytics = async (req, res) => {
         res.status(500).json({ message: "Server error while fetching analytics." });
     }
 };
+
 
 /**
  * @desc    Sends an OTP to a new email address for an existing, logged-in user.

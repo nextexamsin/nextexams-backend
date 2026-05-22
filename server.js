@@ -15,6 +15,8 @@ const { Redis } = require('@upstash/redis');
 const cron = require('node-cron');
 const { initializeLiveTestCron } = require('./utils/liveTestCron');
 
+require('./utils/telegramService.js'); // ✅ Boots up the Telegram Bot
+
 
 // --- INITIALIZE FIREBASE ADMIN SDK ---
 try {

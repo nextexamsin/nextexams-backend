@@ -11,6 +11,7 @@ import Notification from '../models/Notification.js';
 import QuestionReport from '../models/QuestionReport.js';
 import calcScore from '../utils/calcScore.js';
 import TestAttempt from '../models/TestAttempt.js';
+import { testAlertQueue } from '../utils/notificationQueue.js'; // ✅ Import the BullMQ queue
 
 
 const detailedQuestionPopulation = {
@@ -159,6 +160,26 @@ export const createTestSeries = async (req, res) => {
         test.totalMarks = total;
 
         const savedTest = await test.save();
+
+        // ---------------------------------------------------------
+        // ⏰ NEW: SCHEDULE 15-MIN LIVE TEST ALERT 
+        // ---------------------------------------------------------
+        if (savedTest.isLiveTest && savedTest.testWindowStartTime) {
+            const delayTo15MinsBefore = new Date(savedTest.testWindowStartTime).getTime() - (15 * 60 * 1000) - Date.now();
+            
+            if (delayTo15MinsBefore > 0) {
+                await testAlertQueue.add(
+                    'send15MinAlert', 
+                    { testId: savedTest._id, testTitle: savedTest.title },
+                    { 
+                        jobId: `alert_test_${savedTest._id}`, // Unique ID prevents duplicates
+                        delay: delayTo15MinsBefore 
+                    }
+                );
+                console.log(`⏰ Scheduled Live Test Alert for ${savedTest.title}`);
+            }
+        }
+        // ---------------------------------------------------------
 
         const questionIds = savedTest.sections.flatMap(sec => sec.questions.map(q => q._id));
         const sourceTag = `source_test_${savedTest._id}`;
@@ -619,7 +640,28 @@ export const updateTestSeries = async (req, res) => {
       testToUpdate.totalMarks = total;
     }
     
-    const updatedTest = await testToUpdate.save();
+   const updatedTest = await testToUpdate.save();
+
+    // ---------------------------------------------------------
+    // ⏰ NEW: SYNC 15-MIN LIVE TEST ALERT ON UPDATE
+    // ---------------------------------------------------------
+    if (updatedTest.isLiveTest && updatedTest.testWindowStartTime) {
+        const delayTo15MinsBefore = new Date(updatedTest.testWindowStartTime).getTime() - (15 * 60 * 1000) - Date.now();
+        
+        if (delayTo15MinsBefore > 0) {
+            // Because we use the same jobId, BullMQ will automatically replace the old schedule with the new one!
+            await testAlertQueue.add(
+                'send15MinAlert', 
+                { testId: updatedTest._id, testTitle: updatedTest.title },
+                { 
+                    jobId: `alert_test_${updatedTest._id}`, 
+                    delay: delayTo15MinsBefore 
+                }
+            );
+            console.log(`🔄 Re-Scheduled Live Test Alert for ${updatedTest.title}`);
+        }
+    }
+    // ---------------------------------------------------------
 
     // ---------------------------------------------------------
     // 🗑️ CACHE CLEARING LOGIC (Robust Version)
@@ -680,8 +722,22 @@ export const deleteTestSeries = async (req, res) => {
   try {
     const masterTestId = req.params.id;
 
-    // Step 1: Delete the master test series template
     const deletedMaster = await TestSeries.findByIdAndDelete(masterTestId);
+
+    if (!deletedMaster) {
+      return res.status(404).json({ error: 'Master TestSeries not found' });
+    }
+
+    // ---------------------------------------------------------
+    // 🗑️ NEW: REMOVE SCHEDULED ALERT FROM REDIS
+    // ---------------------------------------------------------
+    try {
+        await testAlertQueue.remove(`alert_test_${masterTestId}`);
+        console.log(`🗑️ Removed pending Live Test Alert for ID: ${masterTestId}`);
+    } catch (queueErr) {
+        console.error("Error removing job from queue:", queueErr);
+    }
+    // ---------------------------------------------------------
 
     if (!deletedMaster) {
       return res.status(404).json({ error: 'Master TestSeries not found' });

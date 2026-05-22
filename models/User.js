@@ -43,6 +43,24 @@ const userSchema = new mongoose.Schema({
         default: null
     },
 
+
+    // --- NEW: NOTIFICATION INTEGRATIONS ---
+    telegramChatId: { 
+        type: String, 
+        unique: true, 
+        sparse: true 
+    },
+    webPushSubscriptions: [{
+        endpoint: { type: String },
+        expirationTime: { type: Date, default: null },
+        keys: {
+            p256dh: { type: String },
+            auth: { type: String }
+        }
+    }],
+
+    
+
     // --- NEW: SECURITY & RATE LIMITING FIELDS ---
     security: {
         lastEmailChangeDate: { type: Date, default: null },

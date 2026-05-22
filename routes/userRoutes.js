@@ -26,7 +26,8 @@ const {
     addContactInfo,
     initiateContactChange,
     verifyContactChange,
-    logoutUser, // <--- 1. ADDED THIS IMPORT
+    logoutUser,
+    savePushSubscription
 } = require("../controllers/userController");
 
 const { getPassHistory } = require("../controllers/passController");
@@ -91,5 +92,6 @@ router.post('/profile/send-link-email-otp', protect, sendLinkEmailOtp);
 router.patch('/profile/add-contact', protect, addContactInfo);
 router.post('/profile/initiate-contact-change', protect, initiateContactChange);
 router.post('/profile/verify-contact-change', protect, verifyContactChange);
+router.post('/save-push-subscription', protect, savePushSubscription);
 
 module.exports = router;

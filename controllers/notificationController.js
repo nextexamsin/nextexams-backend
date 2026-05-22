@@ -3,9 +3,10 @@ const mongoose = require('mongoose');
 const Notification = require('../models/Notification');
 const User = require('../models/User.js');
 
-// @desc    Get user's notifications
-// @route   GET /api/notifications
-// @access  Private
+// ✅ Import the new messaging services
+const { sendTelegramAlert } = require('../utils/telegramService');
+const { sendWebPushAlert } = require('../utils/webPushService');
+
 const getNotifications = async (req, res) => {
   try {
     const notifications = await Notification.find({ user: req.user._id })
@@ -17,9 +18,6 @@ const getNotifications = async (req, res) => {
   }
 };
 
-// @desc    Mark notifications as read
-// @route   POST /api/notifications/mark-read
-// @access  Private
 const markNotificationsAsRead = async (req, res) => {
   try {
     await Notification.updateMany(
@@ -34,52 +32,81 @@ const markNotificationsAsRead = async (req, res) => {
 
 // @desc    Admin broadcasts a notification to all users
 // @access  Private/Admin
-// FIX 1: The 'export' keyword was removed from here.
 const broadcastNotification = async (req, res) => {
-  const { message, link, imageUrl, type } = req.body;
+  const { message, link, imageUrl, type, sendToTelegram, sendToWebPush } = req.body;
 
   if (!message || !link) {
     return res.status(400).json({ message: 'Message and link are required.' });
   }
 
   const defaultImageUrl = 'https://blogger.googleusercontent.com/img/a/AVvXsEjpUktpgBy9t73uP7pKn-cjzQzHrk_yb0O6xNf7jGKAkDR_rcJxY-8-GIpXrANCCiaHYDikO1ZFWoeN3ptxs-UkMFG-m_JSnX8KmtU2VMn3YOsLpSN-TjUZgmZiolu4y5Yya8SmfICY3mAhiUMDjXMCEnrIxlxDWf8GKwsbRu7U7twI0SyLbf36AbHZW94';
-   const finalImageUrl = imageUrl || defaultImageUrl;
+  const finalImageUrl = imageUrl || defaultImageUrl;
 
   try {
-    const allUsers = await User.find({ role: 'user' }, '_id');
+    const allUsers = await User.find({ role: 'user' }, '_id name telegramChatId webPushSubscriptions');
     const broadcastId = new mongoose.Types.ObjectId();
+    const clientUrl = process.env.CLIENT_URL || 'https://nextexams.in';
+    const absoluteLink = link.startsWith('http') ? link : `${clientUrl}${link}`;
+
+    let telegramCount = 0;
+    let pushCount = 0;
+
+    // We collect all notification docs into an array first
+    const notificationsToInsert = [];
 
     for (const user of allUsers) {
-      const notification = new Notification({
+      // TELEGRAM NOTIFICATION
+      if (sendToTelegram && user.telegramChatId) {
+          const teleMsg = `📢 <b>Announcement</b>\n\nHi ${user.name || 'Student'},\n${message}\n\n👉 <a href="${absoluteLink}">Click here to view</a>`;
+          sendTelegramAlert(user.telegramChatId, teleMsg);
+          telegramCount++;
+      }
+
+      // WEB PUSH NOTIFICATION
+      if (sendToWebPush && user.webPushSubscriptions && user.webPushSubscriptions.length > 0) {
+          const pushPayload = { title: '📢 NextExams Update', body: message, url: link, icon: finalImageUrl };
+          const validSubscriptions = [];
+          for (const sub of user.webPushSubscriptions) {
+              const result = await sendWebPushAlert(sub, pushPayload);
+              if (result !== 'EXPIRED') validSubscriptions.push(sub);
+          }
+          if (validSubscriptions.length !== user.webPushSubscriptions.length) {
+              user.webPushSubscriptions = validSubscriptions;
+              await user.save();
+          }
+          pushCount++;
+      }
+
+      // Prepare In-App Notification Doc
+      notificationsToInsert.push({
         user: user._id,
-        message,
-        link,
-         imageUrl: finalImageUrl,
-        broadcastId,
-        type,
+        message, link, imageUrl: finalImageUrl, broadcastId, type,
+        // ✅ We attach the final counts to EVERY document for easy aggregation
+        telegramCount: 0, 
+        webPushCount: 0
       });
-      await notification.save();
 
       const userSocketId = req.onlineUsers[user._id.toString()];
-      if (userSocketId) {
-        req.io.to(userSocketId).emit("newNotification", notification);
-      }
+      if (userSocketId) req.io.to(userSocketId).emit("newNotification", { message, link, imageUrl: finalImageUrl, type });
     }
-    res.status(200).json({ message: `Broadcast sent to ${allUsers.length} users.` });
+
+    // Attach the FINAL counts to the documents before saving
+    if (notificationsToInsert.length > 0) {
+        notificationsToInsert[0].telegramCount = telegramCount;
+        notificationsToInsert[0].webPushCount = pushCount;
+        await Notification.insertMany(notificationsToInsert);
+    }
+    
+    res.status(200).json({ message: `Broadcast sent: In-App (${allUsers.length}), Telegram (${telegramCount}), Web Push (${pushCount}).` });
   } catch (error) {
     console.error('Broadcast Error:', error);
     res.status(500).json({ message: 'Server error during broadcast.' });
   }
 };
 
-
-// @desc    Admin gets all notifications
-// @route   GET /api/admin/notifications
-// @access  Private/Admin
 const getAllNotifications = async (req, res) => {
   try {
     const broadcasts = await Notification.aggregate([
-      // Group notifications by the broadcastId, message, and link
       {
         $group: {
           _id: "$broadcastId",
@@ -87,10 +114,13 @@ const getAllNotifications = async (req, res) => {
           link: { $first: "$link" },
           imageUrl: { $first: "$imageUrl" },
           createdAt: { $first: "$createdAt" },
-          count: { $sum: 1 } // Count how many users received it
+          count: { $sum: 1 },
+          // ✅ Extract the Telegram and WebPush counts (we stored them on the first doc)
+          telegramCount: { $max: "$telegramCount" },
+          webPushCount: { $max: "$webPushCount" }
         }
       },
-      { $sort: { createdAt: -1 } } // Sort by creation date
+      { $sort: { createdAt: -1 } }
     ]);
     res.json(broadcasts);
   } catch (error) {
@@ -98,9 +128,6 @@ const getAllNotifications = async (req, res) => {
   }
 };
 
-// @desc    Admin deletes a notification
-// @route   DELETE /api/admin/notifications/:id
-// @access  Private/Admin
 const deleteBroadcast = async (req, res) => {
   try {
     const { broadcastId } = req.params;
@@ -114,15 +141,11 @@ const deleteBroadcast = async (req, res) => {
   }
 };
 
-
-// @desc    Mark a single notification as read
-// @route   POST /api/notifications/:id/read
-// @access  Private
 const markOneAsRead = async (req, res) => {
   try {
     const notification = await Notification.findOne({
       _id: req.params.id,
-      user: req.user._id, // Security: ensure user owns this notification
+      user: req.user._id,
     });
 
     if (!notification) {
@@ -137,9 +160,6 @@ const markOneAsRead = async (req, res) => {
   }
 };
 
-// @desc    Get all notifications for a user with pagination
-// @route   GET /api/notifications/all
-// @access  Private
 const getAllUserNotifications = async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 20;
@@ -164,13 +184,11 @@ const getAllUserNotifications = async (req, res) => {
   }
 };
 
-
-// FIX 2: Added 'broadcastNotification' to the module.exports object.
 module.exports = {
   getNotifications,
   markNotificationsAsRead,
   broadcastNotification, 
-   getAllNotifications,
+  getAllNotifications,
   deleteBroadcast,
   markOneAsRead,
   getAllUserNotifications,

@@ -162,9 +162,9 @@ export const createTestSeries = async (req, res) => {
         const savedTest = await test.save();
 
         // ---------------------------------------------------------
-        // ⏰ NEW: SCHEDULE 15-MIN LIVE TEST ALERT 
+        // ⏰ FIXED: SCHEDULE 15-MIN LIVE TEST ALERT ONLY IF PUBLISHED
         // ---------------------------------------------------------
-        if (savedTest.isLiveTest && savedTest.testWindowStartTime) {
+        if (savedTest.isLiveTest && savedTest.testWindowStartTime && savedTest.status === 'published') {
             const delayTo15MinsBefore = new Date(savedTest.testWindowStartTime).getTime() - (15 * 60 * 1000) - Date.now();
             
             if (delayTo15MinsBefore > 0) {
@@ -252,17 +252,9 @@ export const generateDynamicTestSeries = async (req, res) => {
                 validQuestions.forEach(q => {
                     const qIdStr = q._id.toString();
                     
-                    // Optional: Check for duplicates across sections if you want unique questions only
                     if (!allGeneratedQuestionIds.has(qIdStr)) {
                         sectionQuestionIds.push(q._id);
                         allGeneratedQuestionIds.add(qIdStr);
-                    } else {
-                        // If you allow duplicates across sections, just push it:
-                        // sectionQuestionIds.push(q._id);
-                        
-                        // If you want to strictly prevent duplicates, do nothing here.
-                        // For direct import, usually we allow the admin to do what they want, so let's push it:
-                        // (Comment out the 'if' above if you want to allow duplicates)
                     }
                 });
 
@@ -281,12 +273,10 @@ export const generateDynamicTestSeries = async (req, res) => {
                     if (rule.topic) query.topic = rule.topic;
                     if (rule.difficulty) query.difficulty = rule.difficulty;
 
-                    // Exclude questions already used in previous sections
                     if (allGeneratedQuestionIds.size > 0) {
                         query._id = { $nin: [...allGeneratedQuestionIds].map(id => new mongoose.Types.ObjectId(id)) };
                     }
 
-                    // Handle Source Tags
                     const sourceTag = (rule.tags || []).find(tag => tag.startsWith('source_test_'));
                     if (sourceTag) {
                         const sourceTestId = sourceTag.replace('source_test_', '');
@@ -296,7 +286,6 @@ export const generateDynamicTestSeries = async (req, res) => {
                             const sourceQuestionIds = sourceTest.sections.flatMap(sec => sec.questions);
                             query._id = { ...query._id, $in: sourceQuestionIds };
                         } else {
-                            // If source test not found, force empty result to avoid random questions
                             query._id = { ...query._id, $in: [] }; 
                         }
                     }
@@ -346,8 +335,27 @@ export const generateDynamicTestSeries = async (req, res) => {
         newTestSeries.totalMarks = total;
 
         const savedTest = await newTestSeries.save();
+
+        // ---------------------------------------------------------
+        // ⏰ ADDED: SCHEDULE 15-MIN LIVE TEST ALERT ONLY IF PUBLISHED
+        // ---------------------------------------------------------
+        if (savedTest.isLiveTest && savedTest.testWindowStartTime && savedTest.status === 'published') {
+            const delayTo15MinsBefore = new Date(savedTest.testWindowStartTime).getTime() - (15 * 60 * 1000) - Date.now();
+            
+            if (delayTo15MinsBefore > 0) {
+                await testAlertQueue.add(
+                    'send15MinAlert', 
+                    { testId: savedTest._id, testTitle: savedTest.title },
+                    { 
+                        jobId: `alert_test_${savedTest._id}`,
+                        delay: delayTo15MinsBefore 
+                    }
+                );
+                console.log(`⏰ Scheduled Live Test Alert for ${savedTest.title}`);
+            }
+        }
+        // ---------------------------------------------------------
         
-        // ... (Keep your Notification Logic exactly as it is) ...
         try {
             if (savedTest.isPublished) {
                 const message = `🚀 New Test Available: ${savedTest.title}`;
@@ -722,14 +730,8 @@ export const deleteTestSeries = async (req, res) => {
   try {
     const masterTestId = req.params.id;
 
-    const deletedMaster = await TestSeries.findByIdAndDelete(masterTestId);
-
-    if (!deletedMaster) {
-      return res.status(404).json({ error: 'Master TestSeries not found' });
-    }
-
     // ---------------------------------------------------------
-    // 🗑️ NEW: REMOVE SCHEDULED ALERT FROM REDIS
+    // 🗑️ REMOVE SCHEDULED ALERT FROM REDIS FIRST
     // ---------------------------------------------------------
     try {
         await testAlertQueue.remove(`alert_test_${masterTestId}`);
@@ -739,12 +741,15 @@ export const deleteTestSeries = async (req, res) => {
     }
     // ---------------------------------------------------------
 
+    // Now delete the master test series template
+    const deletedMaster = await TestSeries.findByIdAndDelete(masterTestId);
+
     if (!deletedMaster) {
       return res.status(404).json({ error: 'Master TestSeries not found' });
     }
 
     // Step 2: Delete cloned instances
-   await TestAttempt.deleteMany({ testSeriesId: masterTestId });
+    await TestAttempt.deleteMany({ testSeriesId: masterTestId });
 
     // ---------------------------------------------------------
     // 🗑️ CACHE CLEARING LOGIC
@@ -1591,7 +1596,6 @@ export const updateTestStatus = async (req, res) => {
 
         // --- SAFETY RULES ---
         // Rule 1: A test that has attempts can never go back to 'draft'.
-        // ✅ NEW: Count the standalone attempts directly
         const attemptCount = await TestAttempt.countDocuments({ testSeriesId: test._id });
         
         if (attemptCount > 0 && status === 'draft') {
@@ -1606,8 +1610,34 @@ export const updateTestStatus = async (req, res) => {
         test.status = status;
         await test.save();
 
+      
+        // ---------------------------------------------------------
+        if (test.isLiveTest && test.testWindowStartTime) {
+            // 1. Remove the old job (even if it doesn't exist, this is safe)
+            await testAlertQueue.remove(`alert_test_${test._id}`);
+            
+            if (status === 'published') {
+                // 2. Calculate fresh time
+                const delayTo15MinsBefore = new Date(test.testWindowStartTime).getTime() - (15 * 60 * 1000) - Date.now();
+                
+                if (delayTo15MinsBefore > 0) {
+                    await testAlertQueue.add(
+                        'send15MinAlert', 
+                        { testId: test._id, testTitle: test.title }, // This gets the NEW title
+                        { jobId: `alert_test_${test._id}`, delay: delayTo15MinsBefore }
+                    );
+                    console.log(`⏰ Scheduled Live Test Alert for: ${test.title}`);
+                }
+            } else {
+                console.log(`🗑️ Removed Live Test Alert (Test status is now ${status})`);
+            }
+        }
+        // ---------------------------------------------------------
+        // ---------------------------------------------------------
+
         res.json({ message: `Test status updated to '${status}'` });
     } catch (error) {
+        console.error('Update Status Error:', error);
         res.status(500).json({ message: 'Server error while updating status.' });
     }
 };

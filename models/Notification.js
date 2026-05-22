@@ -26,6 +26,8 @@ const notificationSchema = new mongoose.Schema({
     enum: ['toast', 'banner', 'system'], // Only allow these two types
     default: 'toast',
   },
+  telegramCount: { type: Number, default: 0 },
+  webPushCount: { type: Number, default: 0 },
 }, { timestamps: true }); // timestamps adds createdAt and updatedAt
 
 const Notification = mongoose.model('Notification', notificationSchema);

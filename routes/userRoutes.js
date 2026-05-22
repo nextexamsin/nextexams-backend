@@ -4,6 +4,7 @@ const { body } = require("express-validator");
 const { protect, protectFirebase } = require("../middleware/authMiddleware");
 const { authLimiter } = require("../utils/rateLimiter");
 
+
 const {
     sendOtp,
     verifyOtpAndLogin,
@@ -27,7 +28,8 @@ const {
     initiateContactChange,
     verifyContactChange,
     logoutUser,
-    savePushSubscription
+    savePushSubscription,
+    getDashboardLiveTests
 } = require("../controllers/userController");
 
 const { getPassHistory } = require("../controllers/passController");
@@ -93,5 +95,6 @@ router.patch('/profile/add-contact', protect, addContactInfo);
 router.post('/profile/initiate-contact-change', protect, initiateContactChange);
 router.post('/profile/verify-contact-change', protect, verifyContactChange);
 router.post('/save-push-subscription', protect, savePushSubscription);
+router.get('/dashboard/live-tests', protect, getDashboardLiveTests);
 
 module.exports = router;

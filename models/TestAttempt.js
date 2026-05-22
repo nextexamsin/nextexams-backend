@@ -39,5 +39,6 @@ const testAttemptSchema = new mongoose.Schema({
 // Crucial compound index for fast queries
 testAttemptSchema.index({ testSeriesId: 1, userId: 1 });
 testAttemptSchema.index({ testSeriesId: 1, isCompleted: 1, score: -1 }); // Fast leaderboard sorting
+testAttemptSchema.index({ userId: 1, updatedAt: -1 });
 
 module.exports = mongoose.model('TestAttempt', testAttemptSchema);

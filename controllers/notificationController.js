@@ -3,9 +3,9 @@ const mongoose = require('mongoose');
 const Notification = require('../models/Notification');
 const User = require('../models/User.js');
 
-// ✅ Import the new messaging services
-const { sendTelegramAlert } = require('../utils/telegramService');
-const { sendWebPushAlert } = require('../utils/webPushService');
+// ✅ Import the messaging services using CommonJS
+const { sendTelegramAlert } = require('../utils/telegramService.js');
+const { sendWebPushAlert } = require('../utils/webPushService.js');
 
 const getNotifications = async (req, res) => {
   try {
@@ -80,21 +80,35 @@ const broadcastNotification = async (req, res) => {
       // Prepare In-App Notification Doc
       notificationsToInsert.push({
         user: user._id,
-        message, link, imageUrl: finalImageUrl, broadcastId, type,
-        // ✅ We attach the final counts to EVERY document for easy aggregation
+        message, 
+        link, 
+        imageUrl: finalImageUrl, 
+        broadcastId, 
+        type,
         telegramCount: 0, 
         webPushCount: 0
       });
-
-      const userSocketId = req.onlineUsers[user._id.toString()];
-      if (userSocketId) req.io.to(userSocketId).emit("newNotification", { message, link, imageUrl: finalImageUrl, type });
     }
 
-    // Attach the FINAL counts to the documents before saving
+    // 1. SAVE TO DATABASE FIRST
+    let insertedDocs = [];
     if (notificationsToInsert.length > 0) {
+        // Attach the FINAL counts to the first document before saving for history tracking
         notificationsToInsert[0].telegramCount = telegramCount;
         notificationsToInsert[0].webPushCount = pushCount;
-        await Notification.insertMany(notificationsToInsert);
+        
+        // This returns the fully formed documents with _id and dates!
+        insertedDocs = await Notification.insertMany(notificationsToInsert);
+    }
+
+   // 2. NOW SEND REAL-TIME ALERTS TO FRONTEND
+    for (const doc of insertedDocs) {
+        const userSession = req.onlineUsers[doc.user.toString()];
+        
+        // ✅ FIXED: Target userSession.socketId specifically
+        if (userSession && userSession.socketId) {
+            req.io.to(userSession.socketId).emit("newNotification", doc);
+        }
     }
     
     res.status(200).json({ message: `Broadcast sent: In-App (${allUsers.length}), Telegram (${telegramCount}), Web Push (${pushCount}).` });

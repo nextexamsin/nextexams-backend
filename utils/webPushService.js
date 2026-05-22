@@ -1,17 +1,23 @@
-import webpush from 'web-push';
-import dotenv from 'dotenv';
-dotenv.config();
+// nextExams-backend/utils/webPushService.js
+const webpush = require('web-push');
+require('dotenv').config();
 
 // Configure Web Push with your VAPID keys
-webpush.setVapidDetails(
-    process.env.VAPID_SUBJECT,
-    process.env.VAPID_PUBLIC_KEY,
-    process.env.VAPID_PRIVATE_KEY
-);
+if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+    webpush.setVapidDetails(
+        process.env.VAPID_SUBJECT || 'mailto:admin@nextexams.in',
+        process.env.VAPID_PUBLIC_KEY,
+        process.env.VAPID_PRIVATE_KEY
+    );
+    console.log('✅ Web Push Service Initialized.');
+} else {
+    console.warn('⚠️ VAPID keys missing in .env. Web Push disabled.');
+}
 
-export const sendWebPushAlert = async (subscription, payload) => {
+const sendWebPushAlert = async (subscription, payload) => {
     try {
         await webpush.sendNotification(subscription, JSON.stringify(payload));
+        return 'SUCCESS';
     } catch (error) {
         // If status is 410 (Gone), the user revoked permission or the subscription expired
         if (error.statusCode === 410) {
@@ -19,6 +25,10 @@ export const sendWebPushAlert = async (subscription, payload) => {
             return 'EXPIRED';
         }
         console.error('Error sending web push:', error);
-        throw error;
+        return 'ERROR';
     }
+};
+
+module.exports = {
+    sendWebPushAlert
 };

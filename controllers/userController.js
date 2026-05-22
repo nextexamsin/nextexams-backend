@@ -762,11 +762,66 @@ const unsaveQuestion = async (req, res) => {
   }
 };
 
+/**
+ * @desc    Get paginated and filtered saved questions for a user
+ * @route   GET /api/users/saved-questions
+ * @access  Private
+ */
 const getSavedQuestions = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).populate('savedQuestions');
-    res.status(200).json(user.savedQuestions);
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const search = req.query.search || '';
+    const exam = req.query.exam || '';
+    const subject = req.query.subject || '';
+    const skip = (page - 1) * limit;
+
+    // 1. Get the user's saved question IDs
+    const user = await User.findById(req.user._id).select('savedQuestions');
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    // 2. Build the query restricted ONLY to this user's saved questions
+    const query = { _id: { $in: user.savedQuestions } };
+
+    // Apply Search (handles both localized objects {en: ''} and plain strings)
+    if (search) {
+        query.$or = [
+            { 'questionText.en': { $regex: search, $options: 'i' } },
+            { 'questionText.hi': { $regex: search, $options: 'i' } },
+            { questionText: { $type: "string", $regex: search, $options: 'i' } } 
+        ];
+    }
+
+    // Apply Dropdown Filters
+    if (exam) query.exam = exam;
+    if (subject) query.subject = subject;
+
+    // 3. Run Count and Distinct queries in parallel for maximum speed
+    const [total, uniqueExams, uniqueSubjects] = await Promise.all([
+        Question.countDocuments(query),
+        Question.distinct('exam', { _id: { $in: user.savedQuestions } }),
+        Question.distinct('subject', { _id: { $in: user.savedQuestions } })
+    ]);
+    
+    // 4. Fetch the paginated data
+    const questions = await Question.find(query)
+        .sort({ createdAt: -1 }) // Newest saved first
+        .skip(skip)
+        .limit(limit)
+        .lean();
+
+    res.status(200).json({
+        questions,
+        total,
+        page,
+        totalPages: Math.ceil(total / limit),
+        // We pass the unique categories back so the frontend dropdowns only show relevant options
+        uniqueExams: uniqueExams.filter(Boolean).sort(),
+        uniqueSubjects: uniqueSubjects.filter(Boolean).sort()
+    });
+
   } catch (err) {
+    console.error('getSavedQuestions error:', err);
     res.status(500).json({ message: 'Failed to fetch saved questions' });
   }
 };
@@ -1460,6 +1515,66 @@ const savePushSubscription = async (req, res) => {
     }
 };
 
+/**
+ * @desc    Get bundled dashboard data (Live tests + User Attempts) to prevent N+1 frontend requests
+ * @route   GET /api/users/dashboard/live-tests
+ * @access  Private
+ */
+const getDashboardLiveTests = async (req, res) => {
+    try {
+        const userId = req.user._id;
+
+        // ✅ FIX: Added 'isLiveTest' to the .select() so the frontend UI knows it's a Live Test!
+        const liveTests = await TestSeries.find({ status: 'published', isLiveTest: true })
+            .select('title exam testType isPaid isLiveTest status subject totalMarks testDurationInMinutes testWindowStartTime testWindowEndTime resultPublishTime releaseDate')
+            .lean();
+
+        // Fetch user's attempts for THESE specific tests
+        const testIds = liveTests.map(t => t._id);
+        const attempts = await TestAttempt.find({ 
+            userId: new mongoose.Types.ObjectId(userId),
+            testSeriesId: { $in: testIds } 
+        }).lean();
+
+        // Create O(1) lookup Map (Fixes the O(n²) frontend loop issue)
+        const attemptMap = new Map();
+        
+        attempts.sort((a, b) => new Date(b.endedAt || 0) - new Date(a.endedAt || 0))
+            .forEach(a => {
+                const testId = a.testSeriesId.toString();
+                if (!attemptMap.has(testId)) attemptMap.set(testId, a);
+                if (!a.isCompleted) attemptMap.set(testId + '_inProgress', a);
+            });
+
+        // Enrich tests in O(n) time
+        const enrichedTests = liveTests.map(test => {
+            const testIdStr = test._id.toString();
+            const attempt = attemptMap.get(testIdStr);
+            const inProgressAttempt = attemptMap.get(testIdStr + '_inProgress');
+
+            if (attempt) {
+                return {
+                    ...test,
+                    status: attempt.isCompleted ? 'completed' : 'in-progress',
+                    marks: attempt.score,
+                    attemptId: attempt._id,
+                    inProgressAttemptId: inProgressAttempt ? inProgressAttempt._id : null,
+                    attemptNumber: attempt.attemptNumber || 1
+                };
+            }
+            return test;
+        });
+
+        res.json(enrichedTests);
+    } catch (err) {
+        console.error('getDashboardLiveTests Error:', err);
+        res.status(500).json({ message: 'Error fetching live dashboard data' });
+    }
+};
+
+// Don't forget to export it at the very bottom!
+// module.exports = { ...existingExports, getDashboardLiveTests }
+
 
 module.exports = {
   sendOtp,         
@@ -1492,5 +1607,6 @@ module.exports = {
   verifyContactChange,
   updateUserByAdmin,
   updateAdminNotes,
-  savePushSubscription
+  savePushSubscription,
+  getDashboardLiveTests
 };

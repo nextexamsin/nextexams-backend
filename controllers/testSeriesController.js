@@ -11,7 +11,7 @@ import Notification from '../models/Notification.js';
 import QuestionReport from '../models/QuestionReport.js';
 import calcScore from '../utils/calcScore.js';
 import TestAttempt from '../models/TestAttempt.js';
-import { testAlertQueue } from '../utils/notificationQueue.js'; // ✅ Import the BullMQ queue
+import { testAlertQueue } from '../utils/notificationQueue.mjs'; 
 
 
 const detailedQuestionPopulation = {
@@ -564,28 +564,19 @@ export const getAllTestSeries = async (req, res) => {
     try {
         const { testType, subCategory, subject, exam, status, isPaid, filter1 } = req.query;
         
-        // Build a dynamic query object
         const query = {};
-
         if (testType) query.testType = testType;
         if (subCategory) query.subCategory = subCategory;
         if (exam) query.exam = exam;
         if (filter1) query.filter1 = filter1;
-        
-        // Ensure subject search is lowercase to match storage format
         if (subject) query.subject = subject.toLowerCase();
-
-        // Boolean filters
         if (isPaid !== undefined) query.isPaid = isPaid === 'true';
-
-        // Status handling (Admin vs User)
-        // If status is passed explicitly, use it. Otherwise, default logic:
-        // You might want to default to 'published' if not admin, but for now:
         if (status) query.status = status;
 
         const tests = await TestSeries.find(query)
             .sort({ createdAt: -1 })
-            .select('-sections'); // Exclude sections/questions for lighter load on list view
+            .select('-sections') // Exclude heavy sections
+            .lean(); // 🚀 MASSIVE SPEEDUP: Returns plain objects instead of heavy Mongoose docs
             
         res.json(tests);
     } catch (err) {

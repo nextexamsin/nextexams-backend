@@ -84,11 +84,13 @@ export const getAllTestSeriesGroups = async (req, res) => {
 };
 
 
-// ✅ FIXED: Get group by ID and calculate ranks using TestAttempt collection
+// ✅ FIXED: Using .lean() to prevent memory overload
 export const getTestSeriesGroupById = async (req, res) => {
     try {
-        // 1. Fetch group without trying to populate 'attempts'
-        const group = await TestSeriesGroup.findById(req.params.id).populate('testSeries');
+        // 1. Fetch group WITH .lean() so it's instantly a plain object
+        const group = await TestSeriesGroup.findById(req.params.id)
+            .populate('testSeries')
+            .lean(); // 🚀 SPEEDUP ADDED
 
         if (!group) {
             return res.status(404).json({ error: 'Group not found' });
@@ -98,24 +100,22 @@ export const getTestSeriesGroupById = async (req, res) => {
         const validTests = group.testSeries.filter(test => test && test._id);
         const testIds = validTests.map(t => t._id);
 
-        // 2. Fetch User Attempts from the NEW TestAttempt collection
+        // 2. Fetch User Attempts
         const userAttempts = await TestAttempt.find({
             userId: userId,
             testSeriesId: { $in: testIds }
         }).lean();
 
-        // 3. Fetch ALL completed attempts for these tests to calculate leaderboards instantly
+        // 3. Fetch ALL completed attempts
         const allCompletedAttempts = await TestAttempt.find({
             testSeriesId: { $in: testIds },
             isCompleted: true
         }).select('_id testSeriesId attemptNumber score').lean();
 
         const groupWithUserStatus = {
-            ...group.toObject(),
+            ...group,
             testSeries: validTests.map(test => {
-                const testObj = test.toObject();
-                
-                // Filter attempts for THIS specific test
+                // We no longer need test.toObject() because of .lean() above!
                 const currentTestUserAttempts = userAttempts.filter(a => a.testSeriesId.toString() === test._id.toString());
 
                 let status = 'not-started';
@@ -135,7 +135,6 @@ export const getTestSeriesGroupById = async (req, res) => {
                         mainAttemptId = latestCompletedAttempt._id;
                         attemptNumber = latestCompletedAttempt.attemptNumber;
 
-                        // Calculate Rank in Memory (Lightning Fast)
                         const leaderboard = allCompletedAttempts
                             .filter(a => a.testSeriesId.toString() === test._id.toString() && a.attemptNumber === latestCompletedAttempt.attemptNumber)
                             .sort((a, b) => (b.score || 0) - (a.score || 0));
@@ -162,7 +161,7 @@ export const getTestSeriesGroupById = async (req, res) => {
                 }
 
                 return {
-                    ...testObj,
+                    ...test, // Directly spread the plain test object
                     ...userPerformance,
                     status,
                     attemptId: mainAttemptId,
@@ -207,16 +206,80 @@ export const deleteTestSeriesGroup = async (req, res) => {
   }
 };
 
-// Get full list of test series groups with populated test series
+
+
+
 export const getFullTestSeriesGroups = async (req, res) => {
   try {
-    const groups = await TestSeriesGroup.find()
-      .populate('testSeries')
-      .lean();
+    // ✅ FIX: Backward compatibility for the Navbar!
+    // If 'page' is not passed, return the standard Array format so Navbar doesn't crash.
+    if (!req.query.page) {
+        const groups = await TestSeriesGroup.find()
+            .populate({
+                path: 'testSeries',
+                select: 'title exam testType isPaid tags status subject isLiveTest' 
+            })
+            .sort({ createdAt: -1 })
+            .lean();
+        return res.json(groups);
+    }
 
-    res.json(groups);
+    // --- New Paginated Logic for TestSeriesUser.jsx ---
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20; 
+    const search = req.query.search || '';
+    const tag = req.query.tag || 'All';
+    const skip = (page - 1) * limit;
+
+    const matchStage = {};
+    if (search) {
+      matchStage.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } }
+      ];
+    }
+    if (tag && tag !== 'All') {
+      matchStage.tags = tag;
+    }
+
+    const [allTags, metadata] = await Promise.all([
+      TestSeriesGroup.distinct('tags'),
+      TestSeriesGroup.aggregate([
+        { $match: matchStage },
+        { $count: "total" }
+      ])
+    ]);
+
+    const total = metadata.length > 0 ? metadata[0].total : 0;
+
+    const groups = await TestSeriesGroup.aggregate([
+      { $match: matchStage },
+      { $addFields: { testSeriesCount: { $size: { $ifNull: ["$testSeries", []] } } } },
+      { $sort: { testSeriesCount: -1, createdAt: -1 } },
+      { $skip: skip },
+      { $limit: limit },
+      {
+        $lookup: {
+          from: 'testseries', // Note: ensure this matches your MongoDB collection name exactly (usually lowercase 'testseries')
+          localField: 'testSeries',
+          foreignField: '_id',
+          pipeline: [
+            { $project: { title: 1, exam: 1, testType: 1, isPaid: 1, tags: 1, status: 1, subject: 1, isLiveTest: 1 } }
+          ],
+          as: 'testSeries'
+        }
+      }
+    ]);
+
+    res.json({
+      groups,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+      allTags: ['All', ...allTags.sort()] 
+    });
   } catch (err) {
-    console.error(err);
+    console.error('Get Full Groups Error:', err);
     res.status(500).json({ message: 'Failed to load test series groups' });
   }
 };
@@ -263,7 +326,8 @@ export const getPublishedGroupsWithTests = async (req, res) => {
                 match: { status: 'published' },
                 select: 'title description exam totalMarks isPaid status' 
             })
-            .sort({ createdAt: -1 }); 
+            .sort({ createdAt: -1 })
+            .lean(); // 🚀 SPEEDUP ADDED
 
         const activeGroups = groups.filter(group => group.testSeries.length > 0);
 

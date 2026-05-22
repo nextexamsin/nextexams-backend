@@ -133,5 +133,7 @@ const testSeriesSchema = new mongoose.Schema({
 testSeriesSchema.index({ testType: 1, subCategory: 1, subject: 1, filter1: 1 });
 // Index for fetching Live Tests quickly
 testSeriesSchema.index({ isLiveTest: 1, liveTestStatus: 1 });
+testSeriesSchema.index({ status: 1 });
+testSeriesSchema.index({ groupId: 1 });
 
 module.exports = mongoose.model('TestSeries', testSeriesSchema);

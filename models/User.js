@@ -93,6 +93,6 @@ const userSchema = new mongoose.Schema({
     }
 });
 
-
+userSchema.index({ category: 1 });
 
 module.exports = mongoose.model('User', userSchema);

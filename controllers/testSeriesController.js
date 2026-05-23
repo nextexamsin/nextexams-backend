@@ -562,7 +562,8 @@ export const bulkUploadTestSeries = async (req, res) => {
 
 export const getAllTestSeries = async (req, res) => {
     try {
-        const { testType, subCategory, subject, exam, status, isPaid, filter1 } = req.query;
+        // Added page and limit to destructuring with defaults
+        const { testType, subCategory, subject, exam, status, isPaid, filter1, page = 1, limit = 50 } = req.query;
         
         const query = {};
         if (testType) query.testType = testType;
@@ -573,12 +574,29 @@ export const getAllTestSeries = async (req, res) => {
         if (isPaid !== undefined) query.isPaid = isPaid === 'true';
         if (status) query.status = status;
 
+        // Pagination math
+        const pageNumber = parseInt(page, 10);
+        const limitNumber = parseInt(limit, 10);
+        const skip = (pageNumber - 1) * limitNumber;
+
+        // Fetch paginated data
         const tests = await TestSeries.find(query)
             .sort({ createdAt: -1 })
-            .select('-sections') // Exclude heavy sections
-            .lean(); // 🚀 MASSIVE SPEEDUP: Returns plain objects instead of heavy Mongoose docs
+            .skip(skip)
+            .limit(limitNumber)
+            .select('-sections') 
+            .lean(); 
             
-        res.json(tests);
+        // Get total count for frontend pagination controls
+        const total = await TestSeries.countDocuments(query);
+
+        // Return structured response
+        res.json({
+            data: tests,
+            total,
+            page: pageNumber,
+            totalPages: Math.ceil(total / limitNumber)
+        });
     } catch (err) {
         console.error('Get All TestSeries Error:', err.message);
         res.status(500).json({ error: err.message });

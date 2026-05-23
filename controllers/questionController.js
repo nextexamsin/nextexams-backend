@@ -49,17 +49,33 @@ export const createQuestion = async (req, res) => {
 // GET - Get all questions with optional filters
 export const getQuestions = async (req, res) => {
   try {
-    const { search, subject, exam, type, difficulty, chapter, topic, tags } = req.query;
+    // Added page and limit to destructuring with defaults
+    const { search, subject, exam, type, difficulty, chapter, topic, tags, page = 1, limit = 50 } = req.query;
     const filter = {};
 
-    // ... (keep your existing filter logic)
+    // ... (keep your existing filter logic here) ...
+
+    // Pagination math
+    const pageNumber = parseInt(page, 10);
+    const limitNumber = parseInt(limit, 10);
+    const skip = (pageNumber - 1) * limitNumber;
 
     const questions = await Question.find(filter)
       .populate('createdBy', 'name email')
-      .populate('groupId') // 🔥 ADD THIS LINE
-      .sort({ createdAt: -1 });
+      .populate('groupId') 
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limitNumber)
+      .lean(); // Added .lean() here as well for a speed boost!
       
-    res.json(questions);
+    const total = await Question.countDocuments(filter);
+
+    res.json({
+        data: questions,
+        total,
+        page: pageNumber,
+        totalPages: Math.ceil(total / limitNumber)
+    });
   } catch (err) {
     console.error('Get Questions Error:', err.message);
     res.status(500).json({ error: err.message });

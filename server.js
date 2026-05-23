@@ -203,13 +203,19 @@ io.on('connection', (socket) => {
         }
     });
 
+    // 🚀 OPTIMIZED & SAFE DISCONNECT HANDLER 🚀
     socket.on('disconnect', () => {
-        Object.keys(onlineUsers).forEach((userId) => {
-            // Check socketId inside the object
-            if (onlineUsers[userId].socketId === socket.id) {
-                delete onlineUsers[userId];
+        try {
+            for (const userId in onlineUsers) {
+                // Safe navigation operator (?.) prevents crashes if data is corrupted
+                if (onlineUsers[userId]?.socketId === socket.id) {
+                    delete onlineUsers[userId];
+                    break; // 🔥 CRITICAL FIX: Stop searching once found to save CPU!
+                }
             }
-        });
+        } catch (error) {
+            console.error('Socket disconnect cleanup error:', error);
+        }
     });
 });
 

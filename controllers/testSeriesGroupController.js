@@ -1,6 +1,5 @@
 import TestSeriesGroup from '../models/testSeriesGroupModel.js';
 import TestSeries from '../models/testSeriesModel.js';
-// ✅ NEW: Import the standalone TestAttempt model
 import TestAttempt from '../models/TestAttempt.js';
 
 // Create new group
@@ -33,7 +32,7 @@ export const getAllTestSeriesGroups = async (req, res) => {
       },
       {
         $lookup: {
-          from: 'testseries', // The name of the test series collection in MongoDB
+          from: 'testseries',
           localField: 'testSeries',
           foreignField: '_id',
           as: 'testSeriesDetails'
@@ -83,14 +82,12 @@ export const getAllTestSeriesGroups = async (req, res) => {
   }
 };
 
-
-// ✅ FIXED: Using .lean() to prevent memory overload
+// ✅ FIXED: N+1 Loop removed. Uses O(1) Hash Map lookups.
 export const getTestSeriesGroupById = async (req, res) => {
     try {
-        // 1. Fetch group WITH .lean() so it's instantly a plain object
         const group = await TestSeriesGroup.findById(req.params.id)
             .populate('testSeries')
-            .lean(); // 🚀 SPEEDUP ADDED
+            .lean();
 
         if (!group) {
             return res.status(404).json({ error: 'Group not found' });
@@ -100,22 +97,34 @@ export const getTestSeriesGroupById = async (req, res) => {
         const validTests = group.testSeries.filter(test => test && test._id);
         const testIds = validTests.map(t => t._id);
 
-        // 2. Fetch User Attempts
         const userAttempts = await TestAttempt.find({
             userId: userId,
             testSeriesId: { $in: testIds }
         }).lean();
 
-        // 3. Fetch ALL completed attempts
         const allCompletedAttempts = await TestAttempt.find({
             testSeriesId: { $in: testIds },
             isCompleted: true
-        }).select('_id testSeriesId attemptNumber score').lean();
+        }).select('_id testSeriesId attemptNumber score totalMarks').lean(); 
+
+        // 🚀 THE FIX: Create Hash Map for instant lookups
+        const leaderboardMap = new Map();
+        allCompletedAttempts.forEach(attempt => {
+            const key = `${attempt.testSeriesId.toString()}_${attempt.attemptNumber}`;
+            if (!leaderboardMap.has(key)) {
+                leaderboardMap.set(key, []);
+            }
+            leaderboardMap.get(key).push(attempt);
+        });
+
+        // 🚀 Sort each leaderboard once upfront instead of on every loop
+        leaderboardMap.forEach(leaderboard => {
+            leaderboard.sort((a, b) => (b.score || 0) - (a.score || 0));
+        });
 
         const groupWithUserStatus = {
             ...group,
             testSeries: validTests.map(test => {
-                // We no longer need test.toObject() because of .lean() above!
                 const currentTestUserAttempts = userAttempts.filter(a => a.testSeriesId.toString() === test._id.toString());
 
                 let status = 'not-started';
@@ -135,9 +144,9 @@ export const getTestSeriesGroupById = async (req, res) => {
                         mainAttemptId = latestCompletedAttempt._id;
                         attemptNumber = latestCompletedAttempt.attemptNumber;
 
-                        const leaderboard = allCompletedAttempts
-                            .filter(a => a.testSeriesId.toString() === test._id.toString() && a.attemptNumber === latestCompletedAttempt.attemptNumber)
-                            .sort((a, b) => (b.score || 0) - (a.score || 0));
+                        // 🚀 USE HASH MAP INSTEAD OF .filter()
+                        const key = `${test._id.toString()}_${latestCompletedAttempt.attemptNumber}`;
+                        const leaderboard = leaderboardMap.get(key) || [];
                         
                         const totalUsersInAttempt = leaderboard.length;
                         const rankIndex = leaderboard.findIndex(u => u._id.toString() === latestCompletedAttempt._id.toString());
@@ -161,7 +170,7 @@ export const getTestSeriesGroupById = async (req, res) => {
                 }
 
                 return {
-                    ...test, // Directly spread the plain test object
+                    ...test, 
                     ...userPerformance,
                     status,
                     attemptId: mainAttemptId,
@@ -206,13 +215,8 @@ export const deleteTestSeriesGroup = async (req, res) => {
   }
 };
 
-
-
-
 export const getFullTestSeriesGroups = async (req, res) => {
   try {
-    // ✅ FIX: Backward compatibility for the Navbar!
-    // If 'page' is not passed, return the standard Array format so Navbar doesn't crash.
     if (!req.query.page) {
         const groups = await TestSeriesGroup.find()
             .populate({
@@ -224,7 +228,6 @@ export const getFullTestSeriesGroups = async (req, res) => {
         return res.json(groups);
     }
 
-    // --- New Paginated Logic for TestSeriesUser.jsx ---
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20; 
     const search = req.query.search || '';
@@ -260,7 +263,7 @@ export const getFullTestSeriesGroups = async (req, res) => {
       { $limit: limit },
       {
         $lookup: {
-          from: 'testseries', // Note: ensure this matches your MongoDB collection name exactly (usually lowercase 'testseries')
+          from: 'testseries', 
           localField: 'testSeries',
           foreignField: '_id',
           pipeline: [
@@ -284,12 +287,10 @@ export const getFullTestSeriesGroups = async (req, res) => {
   }
 };
 
-// ✅ FIXED: Get recent test groups based on user's latest attempts via TestAttempt
 export const getRecentTestSeriesGroups = async (req, res) => {
   try {
     const userId = req.user._id;
 
-    // 1. Fetch latest attempts from TestAttempt collection
     const recentAttempts = await TestAttempt.find({ userId })
       .sort({ updatedAt: -1 })
       .limit(10)
@@ -298,7 +299,6 @@ export const getRecentTestSeriesGroups = async (req, res) => {
 
     const uniqueTestIds = [...new Set(recentAttempts.map(a => a.testSeriesId.toString()))];
 
-    // 2. Find the tests to get their groupIds
     const recentTests = await TestSeries.find({ _id: { $in: uniqueTestIds } })
       .select('_id groupId title')
       .lean();
@@ -327,10 +327,9 @@ export const getPublishedGroupsWithTests = async (req, res) => {
                 select: 'title description exam totalMarks isPaid status' 
             })
             .sort({ createdAt: -1 })
-            .lean(); // 🚀 SPEEDUP ADDED
+            .lean();
 
         const activeGroups = groups.filter(group => group.testSeries.length > 0);
-
         res.json(activeGroups);
     } catch (err) {
         console.error('Error fetching published groups with tests:', err.message);
@@ -340,11 +339,8 @@ export const getPublishedGroupsWithTests = async (req, res) => {
 
 export const getPublicTestSeriesGroupById = async (req, res) => {
     try {
-        const group = await TestSeriesGroup.findById(req.params.id).select('name description imageUrl examCategory tags');
-
-        if (!group) {
-            return res.status(404).json({ error: 'Group not found' });
-        }
+        const group = await TestSeriesGroup.findById(req.params.id).select('name description imageUrl examCategory tags').lean();
+        if (!group) return res.status(404).json({ error: 'Group not found' });
         res.json(group);
     } catch (err) {
         console.error('Get Public TestSeriesGroup Error:', err.message);

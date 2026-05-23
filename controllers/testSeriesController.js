@@ -1020,17 +1020,28 @@ export const saveTestProgress = async (req, res) => {
 };
 
 
-// 3. COMPLETE TEST
+// ---------------------------------------------------------
+// 🚀 OPTIMIZED: COMPLETE TEST (USES REDIS INSTEAD OF DB JOIN)
+// ---------------------------------------------------------
 export const completeTest = async (req, res) => {
   const userId = req.user._id;
   const { testId } = req.params;
+  const redis = req.redis;
 
   try {
-    // Need test details to calculate the score
-    const test = await TestSeries.findById(testId).populate(detailedQuestionPopulation);
+    // 🚀 Fetch scoring rubric directly from RAM cache instead of crashing DB with a massive JOIN
+    const cacheKey = `SOLUTION_STATIC_V1:${testId}`;
+    let test = await redis.get(cacheKey);
+
+    if (!test) {
+      test = await TestSeries.findById(testId).populate(detailedQuestionPopulation).lean();
+      await redis.set(cacheKey, JSON.stringify(test), { ex: 86400 });
+    } else {
+      if (typeof test === 'string') test = JSON.parse(test);
+    }
+
     if (!test) return res.status(404).json({ message: 'Test not found' });
 
-    // ✅ NEW: Find the attempt directly
     const attempt = await TestAttempt.findOne({ testSeriesId: testId, userId, isCompleted: false });
     if (!attempt) return res.status(404).json({ message: 'Attempt not found or already submitted' });
 
@@ -1042,7 +1053,7 @@ export const completeTest = async (req, res) => {
     attempt.totalMarks = total;
     attempt.cutoff = test.cutoff || {};
 
-    await attempt.save(); // ✅ Save the attempt
+    await attempt.save(); 
 
     res.status(200).json({ message: 'Test completed successfully' });
   } catch (err) {
@@ -1051,33 +1062,36 @@ export const completeTest = async (req, res) => {
   }
 };
 
-
-
+// ---------------------------------------------------------
+// 🚀 OPTIMIZED: GET SCORE (USES REDIS)
+// ---------------------------------------------------------
 export const getScore = async (req, res) => {
   const userId = req.user._id;
   const { testId } = req.params;
+  const redis = req.redis;
 
   try {
-    const test = await TestSeries.findById(testId).populate('sections.questions');
-    
-    // ✅ FIX: Find the attempt from the standalone collection
+    const cacheKey = `SOLUTION_STATIC_V1:${testId}`;
+    let test = await redis.get(cacheKey);
+
+    if (!test) {
+      test = await TestSeries.findById(testId).populate(detailedQuestionPopulation).lean();
+      await redis.set(cacheKey, JSON.stringify(test), { ex: 86400 });
+    } else {
+      if (typeof test === 'string') test = JSON.parse(test);
+    }
+
     const attempt = await TestAttempt.findOne({ 
         testSeriesId: testId, 
         userId: userId, 
         isCompleted: true 
-    }).sort({ endedAt: -1 }); // Get the latest completed attempt
+    }).sort({ endedAt: -1 }); 
 
     if (!attempt) {
       return res.status(400).json({ message: "Test not submitted or attempt not found." });
     }
 
-    const {
-      score,
-      totalMarks,
-      correct,
-      incorrect,
-      unattempted
-    } = calcScore(attempt.answers, test);
+    const { score, totalMarks, correct, incorrect, unattempted } = calcScore(attempt.answers, test);
 
     const totalQuestions = test.sections.reduce((acc, sec) => acc + sec.questions.length, 0);
     const attempted = attempt.answers.filter(a => a.selectedOptions?.length).length;
@@ -1286,14 +1300,19 @@ export const getDetailedResult = async (req, res) => {
 };
 
 
+// ---------------------------------------------------------
+// 🚀 OPTIMIZED: GET LEADERBOARD (PREVENTS RAM OVERLOAD)
+// ---------------------------------------------------------
 export const getLeaderboard = async (req, res) => {
   const currentUserId = req.user._id.toString();
   const { testId } = req.params;
   const { attempt: attemptQuery, best = 'false', latest = 'false' } = req.query;
 
   try {
-    // ✅ NEW: Fetch directly from TestAttempt collection
-    const attempts = await TestAttempt.find({ testSeriesId: testId, isCompleted: true }).lean();
+    // 🚀 OPTIMIZATION: Extremely narrow select prevents memory crashes on high traffic tests
+    const attempts = await TestAttempt.find({ testSeriesId: testId, isCompleted: true })
+        .select('userId score attemptNumber startedAt')
+        .lean();
     
     if (attempts.length === 0) return res.json([]);
 
@@ -1330,7 +1349,7 @@ export const getLeaderboard = async (req, res) => {
     leaderboardData.sort((a, b) => b.score - a.score);
 
     const userIds = leaderboardData.map(entry => entry.userId);
-    const users = await User.find({ _id: { $in: userIds } }).select('name');
+    const users = await User.find({ _id: { $in: userIds } }).select('name').lean();
     const userMap = new Map(users.map(u => [u._id.toString(), u.name]));
 
     const rankList = leaderboardData.map((entry, index) => ({
@@ -1494,11 +1513,13 @@ export const getSolutionForTest = async (req, res) => {
 };
 
 
+// ---------------------------------------------------------
+// 🚀 OPTIMIZED: GET LATEST ATTEMPTS (AGGREGATION PIPELINE)
+// ---------------------------------------------------------
 export const getLatestAttemptSummaries = async (req, res) => {
   const userId = req.user._id;
 
   try {
-    // ✅ NEW: MongoDB Aggregation is perfectly suited for this now.
     const latestAttempts = await TestAttempt.aggregate([
       { $match: { userId: new mongoose.Types.ObjectId(userId), isCompleted: true } },
       { $sort: { endedAt: -1 } },
@@ -1527,8 +1548,6 @@ export const getLatestAttemptSummaries = async (req, res) => {
           attemptNumber: "$latestAttempt.attemptNumber",
           endedAt: "$latestAttempt.endedAt",
           cutoffs: "$testDetails.cutoff",
-          
-          // ✅ Make sure ALL THREE of these are here:
           isLiveTest: "$testDetails.isLiveTest", 
           isResultPending: "$latestAttempt.isResultPending",
           resultPublishTime: "$testDetails.resultPublishTime"

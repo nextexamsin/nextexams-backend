@@ -79,6 +79,7 @@ const blogRoutes = require('./routes/blogRoutes');
 const commentRoutes = require('./routes/commentRoutes');
 const examCategoryRoutes = require('./routes/examCategoryRoutes');
 const questionGroupRoutes = require('./routes/questionGroupRoutes.js');
+const dashboardRoutes = require('./routes/dashboardRoutes.js');
 
 const { notFound, errorHandler } = require('./middleware/errorMiddleware.js');
 const { apiLimiter } = require('./utils/rateLimiter');
@@ -142,8 +143,8 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
 app.use(compression({
-    level: 6, // Balanced setting for speed/compression
-    threshold: 10 * 1000, // Only compress responses larger than 10KB
+    level: 6,
+    threshold: 1024, // 🚀 Changed from 10 * 1000 to compress anything over 1KB
     filter: (req, res) => {
         if (req.headers['x-no-compression']) {
             return false;
@@ -243,6 +244,7 @@ app.use('/api/blog', apiLimiter, blogRoutes);
 app.use('/api/comments', commentRoutes);
 app.use('/api/exam-categories', examCategoryRoutes);
 app.use('/api/question-groups', questionGroupRoutes);
+app.use('/api/dashboard', dashboardRoutes);
 app.get('/sitemap.xml', sitemapController.getSitemap);
 
 // --- CUSTOM ERROR HANDLING ---

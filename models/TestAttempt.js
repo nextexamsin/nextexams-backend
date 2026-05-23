@@ -28,7 +28,6 @@ const testAttemptSchema = new mongoose.Schema({
     totalMarks: { type: Number, default: 0 },
     cutoff: { UR: Number, EWS: Number, OBC: Number, SC: Number, ST: Number },
 
-    // ✅ LIVE TEST FLAGS
     isLiveAttempt: { type: Boolean, default: false },
     isResultPending: { type: Boolean, default: false },
     rank: { type: Number, default: null },
@@ -36,9 +35,16 @@ const testAttemptSchema = new mongoose.Schema({
 
 }, { timestamps: true });
 
-// Crucial compound index for fast queries
+// Existing compound indexes
 testAttemptSchema.index({ testSeriesId: 1, userId: 1 });
-testAttemptSchema.index({ testSeriesId: 1, isCompleted: 1, score: -1 }); // Fast leaderboard sorting
+testAttemptSchema.index({ testSeriesId: 1, isCompleted: 1, score: -1 });
 testAttemptSchema.index({ userId: 1, updatedAt: -1 });
+
+// 🚀 NEW HIGH-PERFORMANCE INDEXES
+testAttemptSchema.index({ testSeriesId: 1, isCompleted: 1 });
+testAttemptSchema.index({ userId: 1, isCompleted: 1 });
+testAttemptSchema.index({ testSeriesId: 1, attemptNumber: 1, score: -1 });
+testAttemptSchema.index({ userId: 1, createdAt: -1 });
+testAttemptSchema.index({ isCompleted: 1, attemptNumber: 1 });
 
 module.exports = mongoose.model('TestAttempt', testAttemptSchema);

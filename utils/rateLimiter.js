@@ -3,26 +3,58 @@ const rateLimit = require('express-rate-limit');
 const { sendEmail } = require('./emailService'); 
 
 // ====================================================================
-// --- API REQUEST RATE LIMITERS ---
+// --- API REQUEST RATE LIMITERS (OPTIMIZED FOR 10K USERS)
 // ====================================================================
 
+// 🔐 STRICT: Authentication attempts (10 per 5 minutes)
 const authLimiter = rateLimit({
     windowMs: 5 * 60 * 1000, 
     max: 10, 
     standardHeaders: true,
     legacyHeaders: false,
+    skipSuccessfulRequests: true, // ✨ Don't count successful auth
     message: {
         message: 'Too many authentication attempts from this IP, please try again after 5 minutes.',
     },
 });
 
+// 🚀 STANDARD: General API requests (100 per 15 minutes)
 const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, 
-    max: 500,
+    max: 100, // ✨ Reduced from 500 to 100 for better protection
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => {
+        // Don't rate limit health checks or admin users
+        return req.path === '/health' || req.user?.role === 'admin';
+    },
+    message: {
+        message: 'Too many requests from this IP, please try again after 15 minutes.',
+    },
+});
+
+// 🔐 VERY STRICT: Login attempts (5 per 15 minutes)
+const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: true, // ✨ Don't count successful logins
+    // Note: Don't use custom keyGenerator with IP, it breaks IPv6 support
+    // By default it uses request IP which handles both IPv4 and IPv6 properly
+    message: {
+        message: 'Too many login attempts. Please try again after 15 minutes.',
+    },
+});
+
+// 🚀 MODERATE: Test API specific (50 per 15 minutes)
+const testLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 50,
     standardHeaders: true,
     legacyHeaders: false,
     message: {
-        message: 'Too many requests from this IP, please try again after 15 minutes.',
+        message: 'Too many test requests. Please try again after 15 minutes.',
     },
 });
 
@@ -105,5 +137,7 @@ const sendEmailWithRateLimit = async (emailOptions) => {
 module.exports = { 
     sendEmailWithRateLimit,
     authLimiter,
-    apiLimiter 
+    apiLimiter,
+    loginLimiter,
+    testLimiter
 };

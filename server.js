@@ -184,7 +184,9 @@ app.use(cors(corsOptions));
 // --- SOCKET.IO INTEGRATION ---
 const io = new Server(server, { cors: corsOptions });
 
-let onlineUsers = {}; // Tracks Logged-in Users
+// ✅ DUAL INDEXES FOR O(1) LOOKUPS (10K USERS READY)
+let onlineUsers = {};          // userId → {socketId, name, email}
+let socketToUserId = {};       // socketId → userId (reverse index for O(1) lookup)
 
 io.on('connection', (socket) => {
     // A guest connected!
@@ -200,18 +202,25 @@ io.on('connection', (socket) => {
                 name: userData.name || 'Anonymous',
                 email: userData.email || ''
             };
+            
+            // ✨ Add reverse index for O(1) disconnect lookup
+            socketToUserId[socket.id] = userId;
+            
+            console.log(`✅ User ${userId} connected (Total online: ${Object.keys(onlineUsers).length})`);
         }
     });
 
-    // 🚀 OPTIMIZED & SAFE DISCONNECT HANDLER 🚀
+    // 🚀 OPTIMIZED DISCONNECT HANDLER - O(1) INSTEAD OF O(n)
     socket.on('disconnect', () => {
         try {
-            for (const userId in onlineUsers) {
-                // Safe navigation operator (?.) prevents crashes if data is corrupted
-                if (onlineUsers[userId]?.socketId === socket.id) {
-                    delete onlineUsers[userId];
-                    break; // 🔥 CRITICAL FIX: Stop searching once found to save CPU!
-                }
+            // ✨ O(1) lookup instead of O(n) loop!
+            const userId = socketToUserId[socket.id];
+            
+            if (userId) {
+                delete onlineUsers[userId];
+                delete socketToUserId[socket.id];
+                
+                console.log(`✅ User ${userId} disconnected (Total online: ${Object.keys(onlineUsers).length})`);
             }
         } catch (error) {
             console.error('Socket disconnect cleanup error:', error);
@@ -266,11 +275,21 @@ const startServer = async () => {
         const isTestEnv = process.env.NODE_ENV === 'test';
         const dbURI = isTestEnv ? process.env.MONGO_URL_TEST : process.env.MONGO_URL;
         
-        await mongoose.connect(dbURI);
+        // 🚀 CONNECTION POOL CONFIGURATION FOR 10K USERS
+        const mongooseOptions = {
+            maxPoolSize: 100,              // 🔥 Allow 100 concurrent DB connections
+            minPoolSize: 10,               // Keep 10 connections alive
+            waitQueueTimeoutMS: 10000,     // Wait max 10s for available connection
+            serverSelectionTimeoutMS: 5000, // Give up on server selection after 5s
+            socketTimeoutMS: 45000,        // 45s timeout per operation
+            retryWrites: true
+        };
+        
+        await mongoose.connect(dbURI, mongooseOptions);
         console.log(`✅ MongoDB connected successfully to: ${isTestEnv ? 'QA SANDBOX' : 'MAIN DB'}`);
+        console.log(`🚀 Connection pool: maxPoolSize=100, minPoolSize=10`);
         
         // ✅ START THE LIVE TEST ENGINE
-        // Pass your existing redis instance to it so it can clear caches
         initializeLiveTestCron(redis); 
 
         server.listen(PORT, '0.0.0.0', () => {
@@ -283,6 +302,24 @@ const startServer = async () => {
 };
 
 startServer();
+
+// 📊 MEMORY MONITORING - Detect leaks early
+setInterval(() => {
+    const usage = process.memoryUsage();
+    const heapMB = Math.round(usage.heapUsed / 1024 / 1024);
+    const rssMB = Math.round(usage.rss / 1024 / 1024);
+    const externalMB = Math.round(usage.external / 1024 / 1024);
+    
+    console.log(`📊 Memory Status - Heap: ${heapMB}MB | RSS: ${rssMB}MB | External: ${externalMB}MB | Online Users: ${Object.keys(onlineUsers).length}`);
+    
+    // ⚠️ Alert if memory > 400MB (possible memory leak)
+    if (usage.heapUsed > 400 * 1024 * 1024) {
+        console.warn(`⚠️ ⚠️ HIGH MEMORY USAGE! Possible memory leak detected!`);
+        console.warn(`   Heap: ${heapMB}MB (limit: 400MB)`);
+        console.warn(`   Connected Users: ${Object.keys(onlineUsers).length}`);
+        console.warn(`   Socket Mappings: ${Object.keys(socketToUserId).length}`);
+    }
+}, 60000); // Check every 60 seconds
 
 process.on('unhandledRejection', (err) => {
     console.error('❌ UNHANDLED REJECTION! Shutting down...', err);

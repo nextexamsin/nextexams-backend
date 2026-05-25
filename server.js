@@ -310,7 +310,7 @@ setInterval(() => {
     const rssMB = Math.round(usage.rss / 1024 / 1024);
     const externalMB = Math.round(usage.external / 1024 / 1024);
     
-    console.log(`📊 Memory Status - Heap: ${heapMB}MB | RSS: ${rssMB}MB | External: ${externalMB}MB | Online Users: ${Object.keys(onlineUsers).length}`);
+    // console.log(`📊 Memory Status - Heap: ${heapMB}MB | RSS: ${rssMB}MB | External: ${externalMB}MB | Online Users: ${Object.keys(onlineUsers).length}`);
     
     // ⚠️ Alert if memory > 400MB (possible memory leak)
     if (usage.heapUsed > 400 * 1024 * 1024) {

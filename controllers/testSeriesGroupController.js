@@ -1,6 +1,8 @@
 import TestSeriesGroup from '../models/testSeriesGroupModel.js';
 import TestSeries from '../models/testSeriesModel.js';
 import TestAttempt from '../models/TestAttempt.js';
+import cacheMiddlewareObj from '../middleware/cacheMiddleware.js';
+const clearCache = cacheMiddlewareObj.clearCache;
 
 // Create new group
 export const createTestSeriesGroup = async (req, res) => {
@@ -16,6 +18,7 @@ export const createTestSeriesGroup = async (req, res) => {
     });
 
     const savedGroup = await newGroup.save();
+    await clearCache('cache:/api/testseries-groups*');
     res.status(201).json(savedGroup);
   } catch (err) {
     console.error('Create TestSeriesGroup Error:', err.message);
@@ -196,6 +199,7 @@ export const updateTestSeriesGroup = async (req, res) => {
       { new: true }
     );
     if (!updated) return res.status(404).json({ error: 'Group not found' });
+    await clearCache('cache:/api/testseries-groups*');
     res.json(updated);
   } catch (err) {
     console.error('Update TestSeriesGroup Error:', err.message);
@@ -208,6 +212,7 @@ export const deleteTestSeriesGroup = async (req, res) => {
   try {
     const deleted = await TestSeriesGroup.findByIdAndDelete(req.params.id);
     if (!deleted) return res.status(404).json({ error: 'Group not found' });
+    await clearCache('cache:/api/testseries-groups*');
     res.json({ message: 'Group deleted' });
   } catch (err) {
     console.error('Delete TestSeriesGroup Error:', err.message);

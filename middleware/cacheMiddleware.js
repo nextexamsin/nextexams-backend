@@ -1,3 +1,4 @@
+// middleware/cacheMiddleware.js
 const { Redis } = require('@upstash/redis');
 
 // Initialize Upstash Redis exactly like your server.js
@@ -12,7 +13,6 @@ const redis = new Redis({
  */
 const cacheMiddleware = (ttl = 300) => {
     return async (req, res, next) => {
-        // Only cache GET requests
         if (req.method !== 'GET') {
             return next();
         }
@@ -20,11 +20,9 @@ const cacheMiddleware = (ttl = 300) => {
         const key = `cache:${req.originalUrl}`;
         
         try {
-            // Try to fetch from Redis
             const cached = await redis.get(key);
             if (cached) {
                 res.set('X-Cache', 'HIT');
-                // Upstash automatically parses JSON, but we handle string fallback just in case
                 const data = typeof cached === 'string' ? JSON.parse(cached) : cached;
                 return res.json(data);
             }
@@ -32,11 +30,9 @@ const cacheMiddleware = (ttl = 300) => {
             console.warn('Redis Cache read error:', err.message);
         }
 
-        // Intercept res.json to cache the response before sending it
         const originalJson = res.json.bind(res);
         res.json = function(data) {
             try {
-                // Save to Redis (Upstash syntax uses { ex: seconds })
                 redis.set(key, JSON.stringify(data), { ex: ttl })
                     .catch(err => console.warn('Redis Cache write error:', err.message));
             } catch (err) {
@@ -51,4 +47,20 @@ const cacheMiddleware = (ttl = 300) => {
     };
 };
 
+// 🚀 NEW: Function to clear cache from Upstash Redis
+const clearCache = async (pattern = 'cache:*') => {
+    try {
+        // Find all keys matching the pattern (e.g., 'cache:/api/testseries-groups*')
+        const keys = await redis.keys(pattern);
+        if (keys.length > 0) {
+            await redis.del(...keys); // Delete all matched keys
+            console.log(`✅ Cleared ${keys.length} cache entries for pattern: ${pattern}`);
+        }
+    } catch (err) {
+        console.error('❌ Redis Cache clear error:', err.message);
+    }
+};
+
+// Export the middleware as default, and attach clearCache to it
 module.exports = cacheMiddleware;
+module.exports.clearCache = clearCache;
